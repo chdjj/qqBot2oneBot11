@@ -166,20 +166,46 @@ func (a *App) dispatchMessage(ctx context.Context, b *Bot, echo any, kind, openI
 	if msgSeq == 0 {
 		msgSeq = 1
 	}
+	passive := false
 	if ri := b.recentFor(kind + ":" + openID); ri != nil && time.Since(ri.At) < 4*time.Minute && ri.EventID != "" {
 		msg.msg.MsgID = ri.EventID
 		seq := int(msgSeq)
 		msg.msg.MsgSeq = &seq
+		passive = true
 	}
 
-	var res *qq.SendResult
-	if kind == "group" {
-		res, err = b.client.SendGroup(ctx, openID, &msg.msg)
-	} else {
-		res, err = b.client.SendC2C(ctx, openID, &msg.msg)
+	// QQ caps plain text at 4000 characters. Split long text and send the
+	// remainder as follow-ups; the last chunk's id is the one returned.
+	chunks := splitText(msg.msg.Content, maxTextLen)
+	if len(chunks) > 1 && msg.msg.MsgType == 0 {
+		msg.msg.Content = chunks[0]
 	}
-	if err != nil {
-		return onebot.Failed(echo, qqRetCode(err), qqErrorMessage(err))
+	var res *qq.SendResult
+	var lastErr error
+	for i := 0; ; i++ {
+		if i > 0 && msg.msg.MsgType == 0 {
+			msg.msg.Content = chunks[i]
+			// Only the first chunk can share the passive reply slot; the rest
+			// are ordinary messages (seq increments so QQ does not reject them).
+			if passive && msg.msg.MsgSeq != nil {
+				n := *msg.msg.MsgSeq + i
+				msg.msg.MsgSeq = &n
+			}
+		}
+		if kind == "group" {
+			res, lastErr = b.client.SendGroup(ctx, openID, &msg.msg)
+		} else {
+			res, lastErr = b.client.SendC2C(ctx, openID, &msg.msg)
+		}
+		if lastErr != nil {
+			break
+		}
+		if i+1 >= len(chunks) || msg.msg.MsgType != 0 {
+			break
+		}
+	}
+	if lastErr != nil {
+		return onebot.Failed(echo, qqRetCode(lastErr), qqErrorMessage(lastErr))
 	}
 
 	qqMsgID, _ := parseInt64(res.ID)
@@ -198,6 +224,38 @@ func (a *App) dispatchMessage(ctx context.Context, b *Bot, echo any, kind, openI
 	b.mu.Unlock()
 	a.Log("info", fmt.Sprintf("%s 消息已发送 -> %s: %s", map[string]string{"group": "群", "private": "单聊"}[kind], openID, previewSegments(segs)))
 	return onebot.OK(echo, map[string]any{"message_id": qqMsgID})
+}
+
+// maxTextLen is the QQ v2 plain-text limit for one message.
+const maxTextLen = 4000
+
+// splitText breaks s into chunks of at most limit runes, preferring to break
+// after a newline so replies stay readable.
+func splitText(s string, limit int) []string {
+	if limit <= 0 || len([]rune(s)) <= limit {
+		return []string{s}
+	}
+	runes := []rune(s)
+	var out []string
+	for len(runes) > 0 {
+		n := limit
+		if len(runes) < n {
+			n = len(runes)
+		}
+		cut := n
+		for i := n; i > n/2; i-- {
+			if runes[i-1] == '\n' {
+				cut = i
+				break
+			}
+		}
+		out = append(out, strings.TrimRight(string(runes[:cut]), "\n"))
+		runes = runes[cut:]
+		for len(runes) > 0 && runes[0] == '\n' {
+			runes = runes[1:]
+		}
+	}
+	return out
 }
 
 // SendTestGroup sends an active (non-reply) message for the console's test
@@ -232,6 +290,10 @@ func (a *App) deleteMsg(ctx context.Context, b *Bot, echo any, p map[string]any)
 	b.mu.Unlock()
 	if m == nil {
 		return onebot.Failed(echo, 120, "找不到该消息（只能撤回由本适配器发送的消息）")
+	}
+	// QQ only allows retracting messages sent within the last 2 minutes.
+	if time.Since(m.At) > 110*time.Second {
+		return onebot.Failed(echo, 40064004, "已超出消息撤回时限（2 分钟）")
 	}
 	var err error
 	if m.Kind == "group" {
@@ -328,7 +390,18 @@ func segmentsToQQMessage(kind string, segs []onebot.Segment) (qqConvertedMessage
 			// Quoted replies go through msg_id; the marker itself is ignored.
 		case "face":
 			// QQ v2 plain-text sends have no face encoding.
-		case "json", "xml", "markdown", "share", "music":
+		case "markdown":
+			// QQ v2 has a dedicated Markdown message type. A message may only
+			// be Markdown or text, not both.
+			content := onebot.StrParam(seg.Data, "content")
+			if content == "" {
+				content = onebot.StrParam(seg.Data, "data")
+			}
+			if content == "" {
+				return qqConvertedMessage{}, errors.New("markdown 段缺少 content")
+			}
+			return qqConvertedMessage{msg: qq.Message{MsgType: 2, Markdown: map[string]any{"content": content}}}, nil
+		case "json", "xml", "share", "music":
 			return qqConvertedMessage{}, errors.New("QQ 官方机器人不支持该消息段: " + seg.Type)
 		default:
 			return qqConvertedMessage{}, errors.New("不支持的消息段: " + seg.Type)

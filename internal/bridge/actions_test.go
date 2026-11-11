@@ -73,6 +73,49 @@ func TestContentToSegments(t *testing.T) {
 	}
 }
 
+func TestSegmentsToQQMarkdown(t *testing.T) {
+	msg, err := segmentsToQQMessage("group", []onebot.Segment{
+		{Type: "markdown", Data: map[string]any{"content": "## 标题\n正文"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.msg.MsgType != 2 {
+		t.Fatalf("msg_type = %d", msg.msg.MsgType)
+	}
+	md, ok := msg.msg.Markdown.(map[string]any)
+	if !ok || md["content"] != "## 标题\n正文" {
+		t.Fatalf("markdown = %#v", msg.msg.Markdown)
+	}
+}
+
+func TestSplitText(t *testing.T) {
+	long := strings.Repeat("测", 9000)
+	chunks := splitText(long, 4000)
+	if len(chunks) != 3 {
+		t.Fatalf("got %d chunks", len(chunks))
+	}
+	total := 0
+	for _, c := range chunks {
+		if len([]rune(c)) > 4000 {
+			t.Fatalf("chunk too long: %d", len([]rune(c)))
+		}
+		total += len([]rune(c))
+	}
+	if total != 9000 {
+		t.Fatalf("lost characters: %d", total)
+	}
+	// Prefers a newline break.
+	s := strings.Repeat("a", 30) + "\n" + strings.Repeat("b", 30)
+	got := splitText(s, 40)
+	if len([]rune(got[0])) != 30 || got[1] != strings.Repeat("b", 30) {
+		t.Fatalf("newline preference: %#v", got)
+	}
+	if splitText("short", 4000)[0] != "short" {
+		t.Fatal("short text should not split")
+	}
+}
+
 func TestMessageIDStable(t *testing.T) {
 	if a, b := hashID("ROBOT1.0_abc"), hashID("ROBOT1.0_abc"); a != b {
 		t.Fatal("hashID not deterministic")

@@ -97,8 +97,16 @@ Token 校验接受 `Authorization: Bearer <token>`、`Authorization: Token <toke
 ### 消息段
 
 - `text`、`at`（`@全体成员` 不支持）、`image`、`record`、`video`、`file` → 转换为 QQ v2 消息
+- `markdown` → 以 QQ 的 Markdown 消息（`msg_type=2`）发送，需带 `content`
 - 媒体段需要**可访问的 URL**（QQ 服务端会自行下载转存）；一次只能发一个媒体
-- `face`、`json`、`xml`、`markdown` 等段不支持发送，返回明确错误
+- `json`、`xml`、`share`、`music` 等段不支持发送，返回明确错误
+- 纯文本超过 **4000 字符**时自动按行分块续发，返回最后一块的 `message_id`
+
+### 平台限制（影响使用）
+
+- 撤回仅支持 **2 分钟内**发出的消息，超出返回错误码 `40064004`
+- 群消息中的 `@` 在纯文本下把对方渲染为 `@昵称`；`@全体成员` 被 QQ 禁止
+- 被动回复有效期 5 分钟、同一条消息最多回复 5 次；适配器取 4 分钟窗口以留余量
 
 ## ID 映射
 
