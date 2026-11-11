@@ -1,0 +1,14 @@
+# 构建产物
+/qqbot-onebot
+/qqbot-onebot.exe
+/data/
+*.db
+*.db-shm
+*.db-wal
+
+# 编辑器
+.idea/
+.vscode/
+
+# 预览配置（本机调试用）
+/.claude/launch.json

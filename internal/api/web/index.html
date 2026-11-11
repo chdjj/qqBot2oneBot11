@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>QQBot → OneBot 中继控制台</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<div class="shell">
+  <aside class="rail">
+    <div class="brand">
+      <span class="brand-mark">QB</span><span class="brand-arrow">→</span><span class="brand-mark">OB</span>
+    </div>
+    <p class="brand-sub">QQ 官方机器人 · OneBot 11 中继</p>
+
+    <nav class="nav" id="nav">
+      <button data-view="overview" class="on">概览</button>
+      <button data-view="bots">官方机器人</button>
+      <button data-view="listeners">OneBot 监听</button>
+      <button data-view="groups">群与 openid</button>
+      <button data-view="test">发送测试消息</button>
+      <button data-view="logs">实时日志</button>
+    </nav>
+
+    <div class="rail-foot">
+      <div class="pulse-row"><span class="dot" id="pulse-dot"></span><span id="pulse-text">连接中…</span></div>
+      <dl class="foot-stats">
+        <div><dt>网关</dt><dd id="foot-gateway">—</dd></div>
+        <div><dt>监听</dt><dd id="foot-listeners">—</dd></div>
+        <div><dt>事件</dt><dd id="foot-events">—</dd></div>
+      </dl>
+    </div>
+  </aside>
+
+  <main class="work">
+    <header class="work-head">
+      <div>
+        <h1 id="view-title">概览</h1>
+        <p id="view-hint" class="hint">适配器的实时状态与关键指标。</p>
+      </div>
+      <div class="head-actions" id="head-actions"></div>
+    </header>
+
+    <section class="view" data-view="overview">
+      <div class="metric-grid" id="metrics"></div>
+      <div class="two-col">
+        <div class="panel">
+          <div class="panel-head"><h2>机器人状态</h2><span class="panel-note">QQ 网关连接</span></div>
+          <div id="overview-bots" class="stack"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h2>最近事件</h2><span class="panel-note">OneBot 上行</span></div>
+          <div id="overview-events" class="feed"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="view" data-view="bots" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>已接入的官方机器人</h2>
+          <button class="btn primary" id="btn-add-bot">添加机器人</button>
+        </div>
+        <div id="bot-list" class="stack"></div>
+        <p class="empty" id="bot-empty" hidden>
+          还没有机器人。点击「添加机器人」，填入 QQ 开放平台的 AppID 与 AppSecret。
+        </p>
+      </div>
+      <aside class="notes">
+        <h3>获取凭据</h3>
+        <p>在 <a href="https://q.qq.com/qqbot/" target="_blank" rel="noreferrer">QQ 开放平台</a> 创建机器人后，可在「开发设置」中找到 AppID 与 AppSecret。沙箱环境仅用于开发联调。</p>
+        <h3>群 openid 从哪来</h3>
+        <p>QQ 不提供列群接口，群 openid 与机器人绑定。让机器人加入群后，在群里 @ 它说一句话，适配器会记录该群的 openid，之后即可主动发送。</p>
+      </aside>
+    </section>
+
+    <section class="view" data-view="listeners" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>OneBot 11 通信配置</h2>
+          <button class="btn primary" id="btn-add-listener">添加监听</button>
+        </div>
+        <div id="listener-list" class="stack"></div>
+        <p class="empty" id="listener-empty" hidden>
+          还没有监听。添加 HTTP / SSE / WebSocket 任一模式，让 OneBot 客户端接入。
+        </p>
+      </div>
+      <aside class="notes">
+        <h3>五种模式</h3>
+        <dl class="mode-notes">
+          <dt>HTTP 服务器</dt><dd>适配器监听端口，客户端调用 <code>POST /</code> 发动作，事件以 POST 推送到你填的上报地址。</dd>
+          <dt>HTTP + SSE</dt><dd>动作走 <code>POST /</code>，事件走 <code>GET /_events</code> 的 SSE 流。</dd>
+          <dt>HTTP 客户端</dt><dd>事件 POST 到你填写的 HTTP 地址，适配器不监听端口。</dd>
+          <dt>WS 服务器</dt><dd>正向 WebSocket：客户端连 <code>ws://host:port/</code>，同一条连接收发动作与事件。</dd>
+          <dt>WS 客户端</dt><dd>反向 WebSocket：适配器主动连接你填写的 <code>ws://</code> 地址，带 <code>X-Self-ID</code> 与 <code>X-Client-Role: Universal</code>。</dd>
+        </dl>
+      </aside>
+    </section>
+
+    <section class="view" data-view="groups" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>已知的群</h2>
+          <div class="head-inline">
+            <label class="field inline"><span>查看机器人</span><select id="group-bot-filter"></select></label>
+            <button class="btn primary" id="btn-add-group">手动添加 openid</button>
+          </div>
+        </div>
+        <div id="group-list" class="stack"></div>
+        <p class="empty" id="group-empty" hidden>
+          暂无记录。让机器人在群里收到一条 @ 消息，或手动粘贴群 openid。
+        </p>
+      </div>
+      <aside class="notes">
+        <h3>为什么群 ID 是数字</h3>
+        <p>OneBot 的 <code>group_id</code> 是整数。适配器为每个 QQ 群 openid 维护一个稳定的数字 ID，插件用数字即可，适配器在发送时自动换回 openid。若 openid 本身是纯数字，则直接使用它。</p>
+        <h3>主动消息频控</h3>
+        <p>每个群每天最多收到 1000 条机器人主动消息，未认证企业约 30 条/分钟。被动回复（收到消息后 5 分钟内回复）不受此限，适配器会优先使用被动回复。</p>
+      </aside>
+    </section>
+
+    <section class="view" data-view="test" hidden>
+      <div class="panel narrow">
+        <div class="panel-head"><h2>发送一条主动测试消息</h2></div>
+        <form id="test-form" class="form">
+          <label class="field"><span>机器人</span><select id="test-bot" required></select></label>
+          <label class="field"><span>目标群</span><select id="test-group"></select></label>
+          <label class="field"><span>或直接填写群 openid</span><input id="test-openid" placeholder="例如 A1B2C3D4E5F6..."></label>
+          <label class="field"><span>消息内容</span><textarea id="test-message" rows="5" placeholder="这是一条来自适配器控制台的测试消息。"></textarea></label>
+          <label class="check"><input type="checkbox" id="test-markdown"><span>以 Markdown 发送（群消息支持）</span></label>
+          <div class="form-foot">
+            <button class="btn primary" type="submit">发送测试消息</button>
+            <span id="test-result" class="result"></span>
+          </div>
+        </form>
+      </div>
+      <aside class="notes">
+        <h3>主动消息失败怎么办</h3>
+        <p>错误码 <code>40034102</code> 表示当前没有主动消息权限。可让群成员先 @ 机器人互动，再试；或确认机器人认证状态与频控额度。</p>
+      </aside>
+    </section>
+
+    <section class="view" data-view="logs" hidden>
+      <div class="panel">
+        <div class="panel-head">
+          <h2>日志流</h2>
+          <div class="head-inline">
+            <select id="log-level">
+              <option value="all">全部级别</option>
+              <option value="info">info</option>
+              <option value="warn">warn</option>
+              <option value="error">error</option>
+              <option value="debug">debug</option>
+            </select>
+            <button class="btn ghost" id="btn-clear-log">清空视图</button>
+          </div>
+        </div>
+        <div id="log-stream" class="log-stream"></div>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div class="modal-backdrop" id="modal" hidden>
+  <div class="modal" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h2 id="modal-title">标题</h2>
+      <button class="icon-btn" id="modal-close" aria-label="关闭">×</button>
+    </div>
+    <form id="modal-form" class="form"><div id="modal-body"></div>
+      <div class="form-foot">
+        <span id="modal-error" class="result bad"></span>
+        <button class="btn primary" type="submit" id="modal-submit">保存</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+<script src="/static/app.js"></script>
+</body>
+</html>
