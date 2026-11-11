@@ -373,6 +373,11 @@ type qqConvertedMessage struct {
 // maxInlineMediaBytes is the platform's limit for direct binary upload.
 const maxInlineMediaBytes = 5 << 20
 
+// qqbotAtEveryone is the official group-text marker for @全体成员.
+// Requirements: the bot must be a group admin, and at most one such message
+// per group per calendar day.
+const qqbotAtEveryone = `<qqbot-at-everyone />`
+
 // extractBase64 recognises the base64 forms OneBot clients produce:
 //
 //	base64://<payload>                  (OneBot 11 convention)
@@ -492,8 +497,16 @@ func segmentsToQQMessage(kind string, segs []onebot.Segment) (qqConvertedMessage
 		case "at":
 			qq := onebot.StrParam(seg.Data, "qq")
 			if qq == "all" {
-				return qqConvertedMessage{}, errors.New("QQ 官方机器人不支持 @全体成员")
+				// Official group-chat format is <qqbot-at-everyone />, usable in
+				// text and markdown messages. It requires the bot to be a group
+				// admin and is limited to one per group per day; failures are
+				// surfaced by the platform, so we forward it rather than drop it.
+				textParts = append(textParts, qqbotAtEveryone)
+				continue
 			}
+			// A OneBot user_id is one of our numeric mappings, not a QQ
+			// member_openid, so the mention cannot be expressed. Keep a plain
+			// "@name" for readability instead of emitting a broken marker.
 			nick := onebot.StrParam(seg.Data, "name")
 			if nick == "" {
 				nick = qq
@@ -603,6 +616,14 @@ func qqFriendlyMessage(ae *qq.APIError, msg string) string {
 		return fmt.Sprintf("%s（错误码 304023）：机器人被禁言", msg)
 	case 11253:
 		return fmt.Sprintf("%s（错误码 11253）：应用无该接口的访问权限", msg)
+	case 40034143:
+		return fmt.Sprintf("%s（错误码 40034143）：@全体成员需要机器人是群管理员，请让群主在「群设置 → 机器人」里把该机器人设为管理员", msg)
+	case 40034142, 40034144:
+		return fmt.Sprintf("%s（错误码 %d）：@全体成员每群每天仅可发送 1 次，今日额度已用完，请次日再试或换一个群", msg, code)
+	case 40054007:
+		return fmt.Sprintf("%s（错误码 40054007）：消息长度超限，请缩短内容", msg)
+	case 40054005:
+		return fmt.Sprintf("%s（错误码 40054005）：消息被判定重复，请使用不同的 msg_seq", msg)
 	}
 	return fmt.Sprintf("%s（错误码 %d）", msg, code)
 }

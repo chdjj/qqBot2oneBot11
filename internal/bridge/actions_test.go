@@ -42,7 +42,6 @@ func TestSegmentsToQQRejects(t *testing.T) {
 		segs []onebot.Segment
 		want string
 	}{
-		{"at-all", []onebot.Segment{onebot.At("all")}, "@全体"},
 		{"no-url-media", []onebot.Segment{onebot.Image("", "local.png")}, "url"},
 		{"two-media", []onebot.Segment{onebot.Image("u1", ""), onebot.Image("u2", "")}, "一个"},
 		{"unsupported", []onebot.Segment{{Type: "json", Data: map[string]any{}}}, "不支持"},
@@ -236,5 +235,57 @@ func TestVersionInfoFieldsMatchOneBot11(t *testing.T) {
 		if s, isStr := v.(string); !isStr || s == "" {
 			t.Fatalf("field %q must be a non-empty string, got %#v", k, v)
 		}
+	}
+}
+
+func TestAtAllUsesOfficialGroupMarker(t *testing.T) {
+	// The official group-chat marker is <qqbot-at-everyone />, not <@all>.
+	// It is valid in text messages; the platform enforces that the bot is a
+	// group admin and that only one is sent per group per day.
+	msg, err := segmentsToQQMessage("group", []onebot.Segment{
+		onebot.At("all"),
+		onebot.Text(" 今晚八点开会"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.msg.MsgType != 0 {
+		t.Fatalf("msg_type = %d", msg.msg.MsgType)
+	}
+	if !strings.Contains(msg.msg.Content, "<qqbot-at-everyone />") {
+		t.Fatalf("missing official marker: %q", msg.msg.Content)
+	}
+	if strings.Contains(msg.msg.Content, "<@all>") {
+		t.Fatalf("legacy guild marker must not be used: %q", msg.msg.Content)
+	}
+	if !strings.Contains(msg.msg.Content, "今晚八点开会") {
+		t.Fatalf("content lost: %q", msg.msg.Content)
+	}
+}
+
+func TestAtAllWithMediaStillSends(t *testing.T) {
+	msg, err := segmentsToQQMessage("group", []onebot.Segment{
+		onebot.At("all"),
+		onebot.Image("https://example.com/a.png", ""),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.msg.MsgType != 7 || msg.mediaURL == "" {
+		t.Fatalf("media = %#v", msg)
+	}
+	if !strings.Contains(msg.msg.Content, "<qqbot-at-everyone />") {
+		t.Fatalf("marker lost when sending media: %q", msg.msg.Content)
+	}
+}
+
+func TestAtAllOnlyMessage(t *testing.T) {
+	// At-mention alone is still a non-empty message.
+	msg, err := segmentsToQQMessage("group", []onebot.Segment{onebot.At("all")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.msg.MsgType != 0 || !strings.Contains(msg.msg.Content, "<qqbot-at-everyone />") {
+		t.Fatalf("msg = %#v", msg.msg)
 	}
 }
