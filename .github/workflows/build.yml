@@ -185,6 +185,11 @@ jobs:
     permissions:
       contents: write
     steps:
+      # Tags are needed to work out the next version number.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -196,28 +201,47 @@ jobs:
           sha256sum * > SHA256SUMS.txt
           cat SHA256SUMS.txt
 
-      - name: 确定发布标签
-        id: tag
+      - name: 计算下一个版本号
+        id: ver
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
-            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            tag="${GITHUB_REF#refs/tags/}"
+            echo "tag=$tag" >> "$GITHUB_OUTPUT"
+            echo "name=$tag" >> "$GITHUB_OUTPUT"
             echo "prerelease=false" >> "$GITHUB_OUTPUT"
-          else
-            # Rolling release on the main branch. Re-running for the same commit
-            # keeps the tag and just replaces the assets.
-            echo "tag=latest" >> "$GITHUB_OUTPUT"
-            echo "name=最新构建（${GITHUB_SHA::7}）" >> "$GITHUB_OUTPUT"
-            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            echo "手动 tag，使用 $tag"
+            exit 0
           fi
 
-      - name: 发布
+          # Auto-increment: the scheme is v0.N, so bump N by one.
+          # Highest existing v0.N wins; numeric sort keeps v0.10 above v0.9.
+          git fetch --tags --force --quiet || true
+          highest=$(git tag -l 'v0.*' | sed -nE 's/^v0\.([0-9]+)$/\1/p' | sort -n | tail -1)
+          next=$(( ${highest:-0} + 1 ))
+          echo "tag=v0.$next" >> "$GITHUB_OUTPUT"
+          echo "name=v0.$next" >> "$GITHUB_OUTPUT"
+          echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          echo "自动递增：${highest:+v0.$highest} -> v0.$next"
+
+      - name: 发布版本 Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ steps.tag.outputs.tag }}
-          name: ${{ steps.tag.outputs.name }}
-          prerelease: ${{ steps.tag.outputs.prerelease }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.name }}
+          prerelease: ${{ steps.ver.outputs.prerelease }}
+          target_commitish: ${{ github.sha }}
           files: dist/*
-          # Updating an existing release replaces assets with the same name,
-          # which is what a rebuild of the rolling "latest" tag should do.
-          generate_release_notes: ${{ startsWith(github.ref, 'refs/tags/') }}
+          generate_release_notes: true
+
+      # The rolling "latest" tag keeps a stable download URL for the newest
+      # build, while the numbered tags give each release its own identity.
+      - name: 同步 latest 标签
+        if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: 最新构建（${{ github.sha }}）
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          files: dist/*
+          generate_release_notes: false
