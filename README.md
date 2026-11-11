@@ -2,7 +2,7 @@
 
 把 QQ 官方机器人平台（[QQ 开放平台 API v2](https://bot.q.qq.com/wiki/develop/api-v2/)）桥接到 [OneBot 11](https://github.com/botuniverse/onebot-11) 协议，让原本只支持 OneBot 的框架（NoneBot2、Koishi、HoshinoBot 等）可以直接接管 QQ 官方群机器人与单聊机器人。
 
-> **本项目由 AI 编写。** 代码、界面、文档与测试全部由 AI（Claude Fable 5）在没有人工编写代码的情况下生成，人工只提供了需求与验收反馈。请在生产使用前自行审查代码。
+> **本项目由 AI 编写。** 代码、界面、文档与测试全部由 AI（ds4.1f）在没有人工编写代码的情况下生成，人工只提供了需求与验收反馈。请在生产使用前自行审查代码。
 
 ## 它做什么
 
