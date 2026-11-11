@@ -226,7 +226,29 @@ func (a *App) dispatchMessage(ctx context.Context, b *Bot, echo any, kind, openI
 		}
 	}
 	if lastErr != nil {
-		return onebot.Failed(echo, qqRetCode(lastErr), qqErrorMessage(lastErr))
+		// @全体成员 can fail on permissions or the once-per-group-per-day quota.
+		// The message itself is still worth delivering, so retry once with the
+		// marker removed instead of dropping everything.
+		if strings.Contains(msg.msg.Content, qqbotAtEveryone) && isAtEveryoneError(lastErr) {
+			stripped := strings.ReplaceAll(msg.msg.Content, qqbotAtEveryone, "")
+			stripped = strings.TrimSpace(stripped)
+			if stripped == "" {
+				stripped = "（@全体成员 已省略）"
+			}
+			a.Log("warn", fmt.Sprintf("群 @全体成员 发送失败（%s），已去掉标签重发", qqErrorMessage(lastErr)))
+			msg.msg.Content = stripped
+			if kind == "group" {
+				res, lastErr = b.client.SendGroup(ctx, openID, &msg.msg)
+			} else {
+				res, lastErr = b.client.SendC2C(ctx, openID, &msg.msg)
+			}
+			if lastErr == nil {
+				a.Log("info", "已去掉 @全体成员 重发成功")
+			}
+		}
+		if lastErr != nil {
+			return onebot.Failed(echo, qqRetCode(lastErr), qqErrorMessage(lastErr))
+		}
 	}
 
 	qqMsgID, _ := parseInt64(res.ID)
@@ -626,6 +648,27 @@ func qqFriendlyMessage(ae *qq.APIError, msg string) string {
 		return fmt.Sprintf("%s（错误码 40054005）：消息被判定重复，请使用不同的 msg_seq", msg)
 	}
 	return fmt.Sprintf("%s（错误码 %d）", msg, code)
+}
+
+// isAtEveryoneError reports whether the failure is specifically about the
+// @全体成员 marker (missing admin rights, daily quota, or a rejected marker),
+// so the caller can strip it and retry instead of losing the message.
+func isAtEveryoneError(err error) bool {
+	var ae *qq.APIError
+	if !errors.As(err, &ae) {
+		return false
+	}
+	code := ae.Code
+	if code == 0 {
+		code = ae.ErrCode
+	}
+	switch code {
+	case 40034142, 40034143, 40034144, 40034127:
+		return true
+	}
+	// Defence in depth: the platform sometimes phrases it only in the message.
+	msg := strings.ToLower(ae.Message)
+	return strings.Contains(msg, "@全体成员") || strings.Contains(msg, "at-everyone")
 }
 
 func qqRetCode(err error) int {

@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"errors"
 	"strings"
 	"testing"
 
@@ -287,5 +288,46 @@ func TestAtAllOnlyMessage(t *testing.T) {
 	}
 	if msg.msg.MsgType != 0 || !strings.Contains(msg.msg.Content, "<qqbot-at-everyone />") {
 		t.Fatalf("msg = %#v", msg.msg)
+	}
+}
+
+func TestIsAtEveryoneError(t *testing.T) {
+	yes := []int{40034142, 40034143, 40034144, 40034127}
+	for _, code := range yes {
+		err := &qq.APIError{Code: code, Message: "x"}
+		if !isAtEveryoneError(err) {
+			t.Fatalf("code %d should retry without the marker", code)
+		}
+	}
+	// A message-only signal must also be recognised.
+	if !isAtEveryoneError(&qq.APIError{Code: 9999, Message: "消息发送失败，@全体成员次数超限"}) {
+		t.Fatal("message-based detection failed")
+	}
+	// Unrelated failures must not trigger the retry.
+	for _, code := range []int{11244, 40034102, 304023} {
+		if isAtEveryoneError(&qq.APIError{Code: code}) {
+			t.Fatalf("code %d must not be treated as an @all problem", code)
+		}
+	}
+	if isAtEveryoneError(errors.New("plain error")) {
+		t.Fatal("non-API errors should not trigger the retry")
+	}
+}
+
+func TestStripAtEveryoneFallback(t *testing.T) {
+	// Mirrors what the retry does: remove the marker, keep the text.
+	content := "<qqbot-at-everyone /> 今晚八点开会"
+	stripped := strings.TrimSpace(strings.ReplaceAll(content, qqbotAtEveryone, ""))
+	if stripped != "今晚八点开会" {
+		t.Fatalf("stripped = %q", stripped)
+	}
+	// A marker-only message still yields a non-empty placeholder so the send
+	// does not fail on an empty body.
+	only := strings.TrimSpace(strings.ReplaceAll(qqbotAtEveryone, qqbotAtEveryone, ""))
+	if only == "" {
+		only = "（@全体成员 已省略）"
+	}
+	if only == "" || !strings.Contains(only, "@全体成员") {
+		t.Fatalf("placeholder = %q", only)
 	}
 }
