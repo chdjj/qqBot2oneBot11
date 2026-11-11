@@ -222,6 +222,7 @@ jobs:
           echo "name=v0.$next" >> "$GITHUB_OUTPUT"
           echo "prerelease=false" >> "$GITHUB_OUTPUT"
           echo "自动递增：${highest:+v0.$highest} -> v0.$next"
+          echo "short=${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
 
       - name: 发布版本 Release
         uses: softprops/action-gh-release@v2
@@ -240,7 +241,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
-          name: 最新构建（${{ github.sha }}）
+          name: 最新构建（${{ steps.ver.outputs.short }}）
           prerelease: true
           target_commitish: ${{ github.sha }}
           files: dist/*
