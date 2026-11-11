@@ -135,6 +135,10 @@ func (s *Store) migrate() error {
 			next INTEGER NOT NULL,
 			PRIMARY KEY(bot_id, kind)
 		)`,
+		`CREATE TABLE IF NOT EXISTS settings (
+			key TEXT PRIMARY KEY,
+			value TEXT NOT NULL
+		)`,
 	}
 	for _, q := range stmts {
 		if _, err := s.db.Exec(q); err != nil {
@@ -471,6 +475,23 @@ func (s *Store) OpenIDByNum(botID int64, kind string, numID int64) (string, erro
 		return "", ErrNotFound
 	}
 	return openID, err
+}
+
+// ---- settings ----
+
+// GetSetting returns a stored setting, or "" when it has never been written.
+func (s *Store) GetSetting(key string) (string, error) {
+	var v string
+	err := s.db.QueryRow(`SELECT value FROM settings WHERE key=?`, key).Scan(&v)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	return v, err
+}
+
+func (s *Store) SetSetting(key, value string) error {
+	_, err := s.db.Exec(`INSERT INTO settings(key, value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, key, value)
+	return err
 }
 
 func parseInt64(s string) (int64, error) {

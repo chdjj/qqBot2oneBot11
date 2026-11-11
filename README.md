@@ -34,18 +34,34 @@ qqbot-onebot.exe -addr 127.0.0.1:8080
 
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
-| `-addr` | `127.0.0.1:8080` | 控制台监听地址；对外网开放时务必加防火墙或反向代理 |
+| `-addr` | `127.0.0.1:8080` | 控制台监听地址 |
+| `-db` | `data/qqbot-onebot.db` | SQLite 数据库路径 |
+| `-admin-token` | 自动生成 | 控制台登录 token；留空则生成并保存到数据库 |
+| `-debug` | `false` | 输出调试日志 |
+| `-version` | | 打印版本号后退出 |
+
+## 控制台登录
+
+控制台需要 token 才能使用。**每次启动都会在终端打印**：
+
+```
+──────────────────────────────────────────────────────────────
+  控制台地址: http://127.0.0.1:8080
+  登录 token: 6Vd0xQ2m...（43 个字符）
+  来源:      沿用上次生成的值
+──────────────────────────────────────────────────────────────
+```
+
+打开页面后把 token 粘贴进去即可，之后由 HttpOnly Cookie 维持会话（12 小时）。token 生成后保存在数据库 `settings` 表里，**重启不会变**；想更换时用 `-admin-token` 指定新值，或删除数据库中的 `admin_token` 记录。
 
 ## 安全说明
 
-控制台 API **本身不带登录**，默认只监听 `127.0.0.1`。它能够修改机器人凭据、读取群 openid、发送消息，因此：
+控制台默认只监听 `127.0.0.1`，且所有管理接口都要求 token。需要注意：
 
-- 不要把 `-addr` 改成 `0.0.0.0` 后直接暴露到公网。若必须远程访问，请用反向代理加 HTTP 基本认证，或通过 SSH 隧道。
+- 不要把 `-addr` 改成 `0.0.0.0` 后直接暴露到公网。若必须远程访问，请用反向代理加 HTTPS，或通过 SSH 隧道。
 - AppSecret 只写入、不读出：`/api/bots` 响应里的 `secret` 恒为空，并给出 `has_secret` 标记；编辑时留空表示保持原值。
-- 数据库文件 `data/qqbot-onebot.db` 含明文 AppSecret，请限制其文件权限并排除在备份/版本库之外（`.gitignore` 已排除 `data/`）。
+- 数据库文件包含**明文 AppSecret 与登录 token**，请限制其文件权限并排除在备份/版本库之外（`.gitignore` 已排除 `data/`）。拿到数据库就等于拿到全部凭据。
 - OneBot 监听请设置 Token；反向 WS 与 HTTP 上报都会带上它。
-| `-db` | `data/qqbot-onebot.db` | SQLite 数据库路径 |
-| `-debug` | `false` | 输出调试日志 |
 
 ## 使用流程
 
@@ -60,6 +76,26 @@ qqbot-onebot.exe -addr 127.0.0.1:8080
 QQ 对主动消息有严格频控（单群每天 1000 条、未认证约 30 条/分钟）。适配器在发送 OneBot 消息时会**优先使用被动回复**：如果该群在最近 4 分钟内收到过消息，就把上一条消息的 `event_id` 作为 `msg_id` 带上，这样不占用主动消息额度。控制台的测试按钮则故意走主动消息，用来验证链路与权限。
 
 主动消息失败返回 `40034102` 时，说明当前无主动消息权限：让群成员先 @ 机器人互动，或确认机器人认证与频控状态。
+
+### 事件订阅 Intents
+
+添加/编辑机器人时，每类事件都是一个复选框；勾选后界面会自动合成出十进制 intents 值（位或累加），保存时随机器人配置一起写入。
+
+| 位 | 名称 | 事件 |
+| --- | --- | --- |
+| 0 | `GUILDS` | 频道与子频道增删改 |
+| 1 | `GUILD_MEMBERS`（仅私域） | 频道成员加入/变更/移除 |
+| 9 | `GUILD_MESSAGES`（仅私域） | 频道全量消息 |
+| 10 | `GUILD_MESSAGE_REACTIONS`（仅私域） | 表情表态 |
+| 12 | `DIRECT_MESSAGE`（仅私域） | 频道私信 |
+| 25 | `GROUP_AND_C2C_EVENT` | 群 @ 消息、单聊消息、入群/退群等（**默认勾选**） |
+| 26 | `INTERACTION` | 互动事件 |
+| 27 | `MESSAGE_AUDIT` | 消息审核结果 |
+| 28 | `FORUMS_EVENT`（仅私域） | 论坛帖子 |
+| 29 | `AUDIO_ACTION`（仅私域） | 音频动作 |
+| 30 | `PUBLIC_GUILD_MESSAGES` | 频道内 @ 机器人消息 |
+
+标「仅私域」的位需要开放平台授予权限；订阅了无权限的位，网关会在鉴权时直接断开连接。适配器目前**只把群/单聊与会话类事件映射成 OneBot 事件**——勾选频道类 intents 只会让网关多收事件，不会产生新的 OneBot 事件。
 
 ## OneBot 11 支持范围
 
@@ -177,9 +213,9 @@ node hack/ui-test.mjs
 | 检查与测试 | `gofmt` 校验、`go vet`、`go test` |
 | 集成测试 | 启动模拟上游 + 真实适配器，跑 `hack/node-test.mjs`（10 项传输断言）与 `hack/ui-test.mjs` |
 | 编译 | 交叉编译 7 个目标（Windows/Linux/macOS × amd64/arm64，另加 linux/386），关闭 CGO |
-| 提交编译产物 | 仅在推送到 `main` 时，把二进制提交回仓库 |
+| 发布到 Releases | 把编译产物和 `SHA256SUMS.txt` 上传到 GitHub Releases，不提交进仓库 |
 
-推送 `main` 后，作业会把编译好的程序提交到仓库根目录：
+产物清单（每个平台一个文件）：
 
 ```
 qqbot-onebot-windows-amd64.exe
@@ -192,16 +228,18 @@ qqbot-onebot-darwin-arm64
 SHA256SUMS.txt
 ```
 
-版本号在编译时注入（`-version` 与 `get_version_info` 都返回它）：tag 构建用 tag 名，其余用分支名 + 提交短哈希 + 日期。二进制由 `GITHUB_TOKEN` 提交，这类提交**不会**再次触发工作流，因此不会循环。
+发布规则：
 
-打形如 `v1.0.0` 的 tag 时，同一批二进制还会附到 GitHub Release。
+- **推送到 `main`** → 更新滚动发布的 **latest** 标签（标记为 pre-release），资产随每次构建替换。
+- **推送 `v*` 形式的 tag** → 创建对应版本的正式 Release，并自动生成变更说明。
 
-**启用前需要在仓库设置里做两件事**，否则「提交编译产物」作业会因权限不足失败：
+版本号在编译时注入（`-version` 与 OneBot 的 `get_version_info` 都返回它）：tag 构建用 tag 名，其余用分支名 + 提交短哈希 + 日期。
 
-1. **Settings → Actions → General → Workflow permissions** 选择 **Read and write permissions**（否则 `GITHUB_TOKEN` 无法推送）。
-2. **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests** 无需开启（本流程不建 PR），但如果组织策略开启了「Fork PR 需审批」，来自 fork 的 PR 只会跑检查与编译，不会提交产物（`publish` 作业限定了 `push` 到分支才运行）。
+**启用前需要在仓库设置里开启写权限**，否则发布作业会因权限不足失败：
 
-若不想把二进制放进仓库，把 `publish` 作业整段删除即可，其余作业不受影响；下载产物请到对应运行页面的 Artifacts。
+- **Settings → Actions → General → Workflow permissions** 选择 **Read and write permissions**。
+
+下载方式：打开仓库的 **Releases** 页面，在 latest 或某个版本下取对应平台的文件。不想发布时把 `publish` 作业删掉即可，其余作业不受影响（产物仍可在对应运行页面的 Artifacts 中下载）。
 
 ## 已知限制
 

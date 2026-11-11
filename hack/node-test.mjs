@@ -3,7 +3,10 @@
 // Assumes the adapter console runs at 127.0.0.1:8080 with a bot already added.
 import { WebSocket } from 'ws';
 
-const BASE = 'http://127.0.0.1:8080';
+const BASE = process.env.BASE || 'http://127.0.0.1:8080';
+// The console API requires the admin token printed at startup.
+const TOKEN = process.env.ADMIN_TOKEN || '';
+const AUTH = TOKEN ? { Authorization: 'Bearer ' + TOKEN } : {};
 const results = [];
 function check(name, ok, detail = '') {
   results.push({ name, ok, detail });
@@ -11,7 +14,10 @@ function check(name, ok, detail = '') {
 }
 
 async function j(path, opts = {}) {
-  const r = await fetch(BASE + path, { headers: { 'Content-Type': 'application/json' }, ...opts });
+  const r = await fetch(BASE + path, {
+    ...opts,
+    headers: { 'Content-Type': 'application/json', ...AUTH, ...(opts.headers || {}) },
+  });
   const t = await r.text();
   let b; try { b = JSON.parse(t); } catch { b = t; }
   if (!r.ok) throw new Error(b?.error || t);

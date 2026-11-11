@@ -13,6 +13,7 @@ const state = {
   ws: null,
   wsAlive: false,
   logLevel: 'all',
+  intents: null,
 };
 
 const VIEWS = {
@@ -79,7 +80,9 @@ async function api(path, opts = {}) {
   }
   if (!res.ok) {
     const msg = (body && (body.error || body.msg)) || `HTTP ${res.status}`;
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    throw err;
   }
   return body;
 }
@@ -96,13 +99,14 @@ function toast(msg, bad = false) {
 
 async function loadAll() {
   try {
-    const [overview, bots, listeners, groups, logs, recent] = await Promise.all([
+    const [overview, bots, listeners, groups, logs, recent, intents] = await Promise.all([
       api('/api/overview'),
       api('/api/bots'),
       api('/api/listeners'),
       api('/api/groups'),
       api('/api/logs'),
       api('/api/events'),
+      state.intents ? Promise.resolve({ groups: state.intents }) : api('/api/intents'),
     ]);
     state.overview = overview;
     state.bots = bots || [];
@@ -110,9 +114,11 @@ async function loadAll() {
     state.groups = groups || [];
     state.logs = logs || [];
     state.recent = recent || [];
+    state.intents = intents.groups || [];
     renderFoot();
     renderView();
   } catch (e) {
+    if (e.status === 401) { showLogin(); return; }
     toast('加载失败：' + e.message, true);
   }
 }
@@ -370,8 +376,11 @@ function connectWS() {
   state.ws = ws;
 
   ws.onopen = () => { state.wsAlive = true; };
-  ws.onclose = () => {
+  ws.onclose = (ev) => {
     state.wsAlive = false;
+    // 1008 / 4401 style closures mean the session expired: show the login form
+    // instead of retrying forever.
+    if (ev && (ev.code === 4401 || ev.code === 1008)) { showLogin('登录已失效，请重新输入 token'); return; }
     setTimeout(connectWS, 2000);
   };
   ws.onerror = () => { try { ws.close(); } catch (_) {} };
@@ -470,6 +479,7 @@ function openModal(title, bodyHTML, submitLabel, onSubmit) {
   };
   const first = $('#modal-body input, #modal-body textarea');
   if (first) first.focus();
+  wireIntentSummary(form);
 }
 
 function closeModal() { $('#modal').hidden = true; $('#modal-form').onsubmit = null; }
@@ -478,6 +488,22 @@ function closeModal() { $('#modal').hidden = true; $('#modal-form').onsubmit = n
 
 function botFormHTML(b) {
   const editing = b.id != null;
+  // Default for a new bot: the group/C2C intent, matching the backend default.
+  const fallbackBits = state.intents
+    ? state.intents.filter(g => g.default).map(g => g.bit)
+    : [25];
+  const selected = new Set(b.intent_bits && b.intent_bits.length ? b.intent_bits : fallbackBits);
+  const groups = state.intents || [];
+  const boxes = groups.map(g => `
+      <label class="intent-item">
+        <input type="checkbox" name="intent_bit" value="${g.bit}" ${selected.has(g.bit) ? 'checked' : ''}>
+        <span class="intent-text">
+          <b>${esc(g.label)}</b>
+          <em>${esc(g.name)} · 1&lt;&lt;${g.bit}${g.private_only ? ' · 仅私域' : ''}</em>
+          <small>${esc(g.events)}</small>
+        </span>
+      </label>`).join('');
+  const mask = selected.size ? maskOfSelected(selected) : 0;
   return `
     <label class="field"><span>显示名称（可选）</span>
       <input name="name" value="${esc(b.name || '')}" placeholder="例如 社区助手"></label>
@@ -489,10 +515,54 @@ function botFormHTML(b) {
       <label class="check"><input type="checkbox" name="sandbox" ${b.sandbox ? 'checked' : ''}><span>使用沙箱环境</span></label>
       <label class="check"><input type="checkbox" name="enabled" ${b.enabled ? 'checked' : ''}><span>保存后立即启动</span></label>
     </div>
-    <p class="field-hint">默认订阅 <code>GROUP_AND_C2C_EVENT (1&lt;&lt;25)</code>，接收群 @ 消息与单聊消息。无权限的 intents 位会导致网关拒绝连接。</p>
-    <label class="field"><span>Intents（十进制，可选）</span>
-      <input name="intents" type="number" value="${b.intents || 33554432}"></label>
+    <fieldset class="intents">
+      <legend>事件订阅 Intents</legend>
+      <p class="field-hint">勾选后自动合成 intents 值。标「仅私域」的位需要开放平台授予权限，否则网关会直接拒绝连接。</p>
+      ${boxes}
+      <div class="intent-summary">
+        <span>合成值</span>
+        <output name="intents_preview" id="intents-preview">${mask}</output>
+      </div>
+    </fieldset>
   `;
+}
+
+function maskOfSelected(set) {
+  let m = 0;
+  for (const bit of set) m |= 1 << Number(bit);
+  return m;
+}
+
+// Keeps the live summary in sync while the user toggles checkboxes.
+function wireIntentSummary(form) {
+  const boxes = form.querySelectorAll('input[name=intent_bit]');
+  const out = form.querySelector('#intents-preview');
+  if (!out) return;
+  const update = () => {
+    const bits = [];
+    boxes.forEach(b => { if (b.checked) bits.push(Number(b.value)); });
+    out.textContent = bits.length ? maskOfSelected(bits) : '0（不会收到任何事件）';
+    out.classList.toggle('empty', bits.length === 0);
+  };
+  boxes.forEach(b => { b.onchange = update; });
+  update();
+}
+
+function readBotForm(form) {
+  const data = new FormData(form);
+  const bits = [];
+  form.querySelectorAll('input[name=intent_bit]').forEach(b => {
+    if (b.checked) bits.push(Number(b.value));
+  });
+  return {
+    name: data.get('name') || '',
+    app_id: (data.get('app_id') || '').trim(),
+    secret: (data.get('secret') || '').trim(),
+    sandbox: data.get('sandbox') === 'on',
+    enabled: data.get('enabled') === 'on',
+    intent_bits: bits,
+    intents: bits.length ? maskOfSelected(bits) : 0,
+  };
 }
 
 function readBotForm(form) {
@@ -648,6 +718,12 @@ function wireEvents() {
   });
 
   $('#btn-add-bot').onclick = openAddBot;
+  $('#btn-logout').onclick = async () => {
+    try { await api('/api/auth/logout', { method: 'POST' }); } catch (_) {}
+    if (state.ws) { try { state.ws.close(); } catch (_) {} }
+    // The console was wired once; reloading is the cleanest way to reset it.
+    location.reload();
+  };
   $('#btn-add-listener').onclick = openAddListener;
   $('#btn-add-group').onclick = openAddGroup;
   $('#btn-clear-log').onclick = () => { state.logs = []; renderLogs(); };
@@ -743,9 +819,67 @@ function wireEvents() {
   });
 }
 
+/* ---------- login ---------- */
+
+function showLogin(message) {
+  const panel = $('#login');
+  panel.hidden = false;
+  $('.shell').style.display = 'none';
+  const err = $('#login-error');
+  err.textContent = message || '';
+  const input = $('#login-token');
+  input.focus();
+}
+
+function hideLogin() {
+  $('#login').hidden = true;
+  $('.shell').style.display = '';
+}
+
+async function boot() {
+  try {
+    const st = await api('/api/auth/check');
+    if (!st.authorized) { showLogin(); return; }
+  } catch (e) {
+    // A 401 from /api/auth/check still means "not logged in".
+    showLogin();
+    return;
+  }
+  startConsole();
+}
+
+let consoleStarted = false;
+function startConsole() {
+  if (consoleStarted) return;
+  consoleStarted = true;
+  hideLogin();
+  wireEvents();
+  connectWS();
+  loadAll();
+  setInterval(() => { if (!state.wsAlive) loadAll(); }, 15000);
+}
+
 /* ---------- boot ---------- */
 
-wireEvents();
-connectWS();
-loadAll();
-setInterval(() => { if (!state.wsAlive) loadAll(); }, 15000);
+$('#login-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const btn = $('#login-submit');
+  btn.disabled = true;
+  $('#login-error').textContent = '';
+  try {
+    await api('/api/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ token: ($('#login-token').value || '').trim() }),
+    });
+    $('#login-token').value = '';
+    // A fresh session means a fresh console: listeners were never attached.
+    consoleStarted = false;
+    startConsole();
+  } catch (err) {
+    $('#login-error').textContent = err.message;
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+boot();

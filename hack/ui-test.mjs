@@ -25,9 +25,12 @@ const dom = new JSDOM(html.replace('/static/app.js', ''), {
   pretendToBeVisual: true,
 });
 const w = dom.window;
-w.fetch = (input, init) => {
+const TOKEN = process.env.ADMIN_TOKEN || '';
+w.fetch = (input, init = {}) => {
   const url = String(input).startsWith('http') ? String(input) : BASE + String(input);
-  return fetch(url, init);
+  const headers = { ...(init.headers || {}) };
+  if (TOKEN) headers.Authorization = 'Bearer ' + TOKEN;
+  return fetch(url, { ...init, headers });
 };
 w.WebSocket = class {
   constructor() { setTimeout(() => this.onopen && this.onopen(), 5); }

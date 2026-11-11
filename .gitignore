@@ -1,12 +1,14 @@
 # 构建产物
 /qqbot-onebot
 /qqbot-onebot.exe
+/qqbot-onebot-*
+/SHA256SUMS.txt
 /data/
 *.db
 *.db-shm
 *.db-wal
 
-# CI 产物中间目录（根目录的 qqbot-onebot-* 是有意提交的，不要忽略）
+# CI 中间目录
 /dist/
 
 # 编辑器

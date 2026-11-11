@@ -245,6 +245,72 @@ h1 { font-size: 25px; font-weight: 550; letter-spacing: -.01em; margin: 0 0 4px;
 .modal-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
 .modal-head h2 { font-size: 15px; margin: 0; font-weight: 550; }
 
+/* ---- login ---- */
+.login-screen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.login-screen[hidden] { display: none; }
+.login-card {
+  width: min(420px, 100%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--r);
+  padding: 30px 28px 26px;
+  position: relative;
+}
+.login-card::before {
+  content: ""; position: absolute; left: 0; top: 0; width: 100%; height: 2px;
+  background: linear-gradient(90deg, var(--signal-dim), transparent 60%);
+}
+.login-card .brand { font-size: 22px; margin-bottom: 2px; }
+.login-sub { margin: 0 0 22px; color: var(--faint); font-size: 12.5px; }
+.login-hint { margin: 12px 0 18px; font-size: 11.5px; line-height: 1.6; color: var(--faint); }
+.login-foot { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+
+/* ---- intents ---- */
+.intents {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r);
+  padding: 12px 14px 10px;
+  margin: 2px 0 0;
+}
+.intents legend {
+  font-size: 11.5px;
+  color: var(--signal-dim);
+  padding: 0 6px;
+  letter-spacing: .02em;
+}
+.intent-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 7px 4px;
+  border-bottom: 1px dotted var(--line-soft);
+  cursor: pointer;
+}
+.intent-item:last-of-type { border-bottom: 0; }
+.intent-item:hover { background: rgba(79,209,165,.04); }
+.intent-item input { margin-top: 3px; accent-color: var(--signal); flex-shrink: 0; }
+.intent-text { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.intent-text b { font-size: 12.5px; font-weight: 500; color: var(--text); }
+.intent-text em {
+  font-style: normal; font-family: var(--mono); font-size: 10.5px; color: var(--faint);
+}
+.intent-text small { font-size: 11px; color: var(--muted); line-height: 1.5; }
+.intent-summary {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line-soft);
+  font-size: 11.5px; color: var(--faint);
+}
+.intent-summary output {
+  font-family: var(--mono); font-size: 12px; color: var(--signal);
+}
+.intent-summary output.empty { color: var(--alarm); }
+
 /* ---- toasts ---- */
 .toasts { position: fixed; right: 20px; bottom: 20px; display: flex; flex-direction: column; gap: 8px; z-index: 60; }
 .toast {

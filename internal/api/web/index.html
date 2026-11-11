@@ -7,6 +7,25 @@
 <link rel="stylesheet" href="/static/app.css">
 </head>
 <body>
+<div class="login-screen" id="login" hidden>
+  <form class="login-card" id="login-form">
+    <div class="brand">
+      <span class="brand-mark">QB</span><span class="brand-arrow">→</span><span class="brand-mark">OB</span>
+    </div>
+    <p class="login-sub">QQ 官方机器人 · OneBot 11 中继</p>
+    <label class="field">
+      <span>登录 token</span>
+      <input id="login-token" type="password" autocomplete="current-password" required
+             placeholder="启动时终端打印的那串字符">
+    </label>
+    <p class="login-hint">token 在程序启动时打印在终端里，形如 <code>6Vd0…</code>。它保存在数据库的 <code>settings</code> 表中，重启后不变。</p>
+    <div class="login-foot">
+      <span id="login-error" class="result bad"></span>
+      <button class="btn primary" type="submit" id="login-submit">进入控制台</button>
+    </div>
+  </form>
+</div>
+
 <div class="shell">
   <aside class="rail">
     <div class="brand">
@@ -40,6 +59,7 @@
         <p id="view-hint" class="hint">适配器的实时状态与关键指标。</p>
       </div>
       <div class="head-actions" id="head-actions"></div>
+      <button class="btn ghost small" id="btn-logout" title="退出登录">退出登录</button>
     </header>
 
     <section class="view" data-view="overview">

@@ -3,6 +3,7 @@ package api
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -12,36 +13,85 @@ import (
 	"time"
 
 	"qqbotonebot/internal/bridge"
+	"qqbotonebot/internal/intents"
 	"qqbotonebot/internal/onebot"
 	"qqbotonebot/internal/qq"
 	"qqbotonebot/internal/store"
 )
 
 type Server struct {
-	app *bridge.App
+	app  *bridge.App
+	auth *Auth
 }
 
-func New(app *bridge.App) *Server { return &Server{app: app} }
+func New(app *bridge.App, auth *Auth) *Server { return &Server{app: app, auth: auth} }
 
 func (s *Server) Routes() http.Handler {
 	mux := http.NewServeMux()
 
-	mux.HandleFunc("/api/overview", s.overview)
-	mux.HandleFunc("/api/bots", s.bots)
-	mux.HandleFunc("/api/bots/", s.botByID)
-	mux.HandleFunc("/api/listeners", s.listeners)
-	mux.HandleFunc("/api/listeners/", s.listenerByID)
-	mux.HandleFunc("/api/groups", s.groups)
-	mux.HandleFunc("/api/groups/", s.groupByID)
-	mux.HandleFunc("/api/test-message", s.testMessage)
-	mux.HandleFunc("/api/logs", s.logs)
-	mux.HandleFunc("/api/events", s.events)
-	mux.HandleFunc("/api/ws", s.consoleWS)
+	// Auth endpoints are reachable without a token: the login page needs to
+	// verify a user-supplied token and then set the session cookie.
+	mux.HandleFunc("/api/auth/login", s.login)
+	mux.HandleFunc("/api/auth/logout", s.logout)
+	mux.HandleFunc("/api/auth/check", s.authCheck)
+
+	api := http.NewServeMux()
+	api.HandleFunc("/api/overview", s.overview)
+	api.HandleFunc("/api/bots", s.bots)
+	api.HandleFunc("/api/bots/", s.botByID)
+	api.HandleFunc("/api/listeners", s.listeners)
+	api.HandleFunc("/api/listeners/", s.listenerByID)
+	api.HandleFunc("/api/groups", s.groups)
+	api.HandleFunc("/api/groups/", s.groupByID)
+	api.HandleFunc("/api/test-message", s.testMessage)
+	api.HandleFunc("/api/intents", s.intentsCatalog)
+	api.HandleFunc("/api/logs", s.logs)
+	api.HandleFunc("/api/events", s.events)
+	api.HandleFunc("/api/ws", s.consoleWS)
 	if os.Getenv("QQBOT_TEST_INJECT") == "1" {
-		mux.HandleFunc("/api/__test/inject", s.inject)
+		api.HandleFunc("/api/__test/inject", s.inject)
 	}
+	mux.Handle("/api/", s.auth.Middleware(api))
 	mux.HandleFunc("/", s.index)
 	return mux
+}
+
+// login verifies a token and stores it in an HttpOnly cookie so the page's
+// WebSocket and EventSource connections authenticate without URL plumbing.
+func (s *Server) login(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	var req struct {
+		Token string `json:"token"`
+	}
+	if err := decodeBody(r, &req); err != nil {
+		writeErr(w, http.StatusBadRequest, "请求格式错误")
+		return
+	}
+	got := strings.TrimSpace(req.Token)
+	s.auth.mu.RLock()
+	want := s.auth.token
+	s.auth.mu.RUnlock()
+	if subtle.ConstantTimeCompare([]byte(got), []byte(want)) != 1 {
+		// Small uniform delay makes guessing marginally less useful.
+		time.Sleep(120 * time.Millisecond)
+		writeErr(w, http.StatusUnauthorized, "token 不正确")
+		return
+	}
+	s.auth.SetCookie(w, r)
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (s *Server) logout(w http.ResponseWriter, r *http.Request) {
+	http.SetCookie(w, &http.Cookie{Name: sessionCookie, Value: "", Path: "/", MaxAge: -1})
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+// authCheck lets the page decide whether to show the login screen.
+func (s *Server) authCheck(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"authorized": s.auth.Valid(r)})
 }
 
 func (s *Server) inject(w http.ResponseWriter, r *http.Request) {
@@ -129,27 +179,54 @@ func (s *Server) overview(w http.ResponseWriter, r *http.Request) {
 // ---- bots ----
 
 type botRequest struct {
-	Name    string `json:"name"`
-	AppID   string `json:"app_id"`
-	Secret  string `json:"secret"`
-	Sandbox bool   `json:"sandbox"`
-	Intents int64  `json:"intents"`
-	Enabled bool   `json:"enabled"`
+	Name       string `json:"name"`
+	AppID      string `json:"app_id"`
+	Secret     string `json:"secret"`
+	Sandbox    bool   `json:"sandbox"`
+	Intents    int64  `json:"intents"`
+	IntentBits []uint `json:"intent_bits"`
+	Enabled    bool   `json:"enabled"`
+}
+
+// resolveIntents prefers an explicit bit list from the checkboxes, falling
+// back to a raw mask so older clients and hand-edited configs still work.
+func resolveIntents(req botRequest) int64 {
+	if len(req.IntentBits) > 0 {
+		return intents.Mask(req.IntentBits)
+	}
+	if req.Intents != 0 {
+		return req.Intents
+	}
+	return intents.DefaultMask()
 }
 
 type botView struct {
 	store.Bot
-	Secret    string    `json:"secret"` // always empty in responses; see redactedView
-	HasSecret bool      `json:"has_secret"`
-	Runtime   qq.Status `json:"runtime"`
+	Secret     string    `json:"secret"` // always empty in responses; see redactedView
+	HasSecret  bool      `json:"has_secret"`
+	IntentBits []uint    `json:"intent_bits"`
+	Runtime    qq.Status `json:"runtime"`
 }
 
 // redactedView strips the AppSecret so the console (and anything that can
 // reach the API) never receives it. A non-empty secret on write means "set".
 func redactedView(b store.Bot, st qq.Status) botView {
-	v := botView{Bot: b, Runtime: st, HasSecret: b.Secret != ""}
+	v := botView{Bot: b, Runtime: st, HasSecret: b.Secret != "", IntentBits: intents.Bits(b.Intents)}
 	v.Bot.Secret = ""
 	return v
+}
+
+// intentsCatalog lists every subscribable intent so the console can render
+// checkboxes without duplicating the table.
+func (s *Server) intentsCatalog(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeErr(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"groups":       intents.All,
+		"default_mask": intents.DefaultMask(),
+	})
 }
 
 func (s *Server) bots(w http.ResponseWriter, r *http.Request) {
@@ -175,7 +252,7 @@ func (s *Server) bots(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "AppID 和 AppSecret 不能为空")
 			return
 		}
-		b := store.Bot{Name: req.Name, AppID: req.AppID, Secret: req.Secret, Sandbox: req.Sandbox, Intents: req.Intents, Enabled: req.Enabled}
+		b := store.Bot{Name: req.Name, AppID: req.AppID, Secret: req.Secret, Sandbox: req.Sandbox, Intents: resolveIntents(req), Enabled: req.Enabled}
 		if b.Intents == 0 {
 			b.Intents = 1 << 25
 		}
@@ -233,7 +310,11 @@ func (s *Server) botByID(w http.ResponseWriter, r *http.Request) {
 		if s := strings.TrimSpace(req.Secret); s != "" {
 			b.Secret = s
 		}
-		if req.Intents != 0 {
+		// Intent checkboxes always send intent_bits; a mask-only client is
+		// still accepted so nothing regresses.
+		if len(req.IntentBits) > 0 {
+			b.Intents = intents.Mask(req.IntentBits)
+		} else if req.Intents != 0 {
 			b.Intents = req.Intents
 		}
 		b.Enabled = req.Enabled

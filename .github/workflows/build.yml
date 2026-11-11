@@ -75,26 +75,45 @@ jobs:
           QQBOT_TEST_INJECT: "1"
         run: |
           go build -o /tmp/qqbot-onebot ./cmd/qqbot-onebot
-          /tmp/qqbot-onebot -addr 127.0.0.1:8080 -db /tmp/test.db > /tmp/server.log 2>&1 &
+          # A fixed token keeps the checks below deterministic; the default
+          # random one is what real deployments use.
+          export ADMIN_TOKEN="ci-test-token-0123456789"
+          /tmp/qqbot-onebot -addr 127.0.0.1:8080 -db /tmp/test.db -admin-token "$ADMIN_TOKEN" > /tmp/server.log 2>&1 &
+          echo "ADMIN_TOKEN=$ADMIN_TOKEN" >> "$GITHUB_ENV"
           # Wait for the console to answer rather than guessing a sleep.
+          # /api/overview now needs auth, so use the login endpoint's 401 as the
+          # liveness signal and the authorized call as the readiness check.
           for i in $(seq 1 60); do
-            if curl -fsS --noproxy '*' http://127.0.0.1:8080/api/overview > /dev/null 2>&1; then
+            if curl -fsS --noproxy '*' -H "Authorization: Bearer $ADMIN_TOKEN" \
+                 http://127.0.0.1:8080/api/overview > /dev/null 2>&1; then
               echo "console ready"; break
             fi
             sleep 0.5
           done
           curl -fsS --noproxy '*' -X POST http://127.0.0.1:8080/api/bots \
+            -H "Authorization: Bearer $ADMIN_TOKEN" \
             -H 'Content-Type: application/json' \
-            -d '{"name":"集成测试","app_id":"123456","secret":"test-secret","enabled":true}'
+            -d '{"name":"integration","app_id":"123456","secret":"test-secret","enabled":true,"intent_bits":[25]}'
           echo
           for i in $(seq 1 40); do
-            if curl -fsS --noproxy '*' http://127.0.0.1:8080/api/bots | grep -q '"state":"online"'; then
+            if curl -fsS --noproxy '*' -H "Authorization: Bearer $ADMIN_TOKEN" \
+                http://127.0.0.1:8080/api/bots | grep -q '"state":"online"'; then
               echo "gateway online"; break
             fi
             sleep 0.5
           done
           node hack/node-test.mjs
           node hack/ui-test.mjs
+          node hack/login-intents-test.mjs
+
+      - name: 未授权访问必须被拒绝
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' --noproxy '*' http://127.0.0.1:8080/api/overview)
+          echo "without token -> $code"
+          if [ "$code" != "401" ]; then
+            echo "管理接口未受保护"
+            exit 1
+          fi
 
       - name: 失败时上传日志
         if: failure()
@@ -155,63 +174,14 @@ jobs:
 
   # Commit the freshly built binaries back into the repo as requested.
   # Only runs on pushes to main (never on PRs, and never on tag builds twice).
+  # Publish binaries to GitHub Releases instead of committing them into the
+  # repository. Every push to main updates a rolling "latest" release; tags
+  # create their own versioned release.
   publish:
-    name: 提交编译产物
+    name: 发布到 Releases
     runs-on: ubuntu-latest
     needs: [build, integration]
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/')
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: 生成校验文件
-        run: |
-          cd dist
-          sha256sum * > SHA256SUMS.txt
-          cat SHA256SUMS.txt
-
-      - name: 提交并推送
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-
-          # Binaries live at the repo root so people can download a single
-          # file straight from the repository page.
-          for f in dist/*; do
-            cp "$f" "./$(basename "$f")"
-          done
-
-          # The files must exist; the build matrix guarantees them.
-          if ! ls qqbot-onebot-* >/dev/null 2>&1; then
-            echo "没有找到编译产物，跳过提交"
-            exit 0
-          fi
-          git add -f qqbot-onebot-* SHA256SUMS.txt
-
-          if git diff --staged --quiet; then
-            echo "二进制无变化，跳过提交"
-            exit 0
-          fi
-
-          git commit -m "build: 自动编译产物" \
-            -m "由 GitHub Actions 在 ${GITHUB_SHA::7} 上生成，构建号 ${GITHUB_RUN_NUMBER}。"
-
-          # The commit made by GITHUB_TOKEN does not trigger new workflows, so
-          # this push cannot loop.
-          git push
-
-  # On a tag, attach the same binaries to a GitHub Release.
-  release:
-    name: 发布 Release
-    runs-on: ubuntu-latest
-    needs: build
-    if: startsWith(github.ref, 'refs/tags/')
+    if: github.event_name == 'push'
     permissions:
       contents: write
     steps:
@@ -224,9 +194,30 @@ jobs:
         run: |
           cd dist
           sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
 
-      - uses: softprops/action-gh-release@v2
+      - name: 确定发布标签
+        id: tag
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "tag=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "name=${GITHUB_REF#refs/tags/}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            # Rolling release on the main branch. Re-running for the same commit
+            # keeps the tag and just replaces the assets.
+            echo "tag=latest" >> "$GITHUB_OUTPUT"
+            echo "name=最新构建（${GITHUB_SHA::7}）" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: 发布
+        uses: softprops/action-gh-release@v2
         with:
-          files: |
-            dist/*
-          generate_release_notes: true
+          tag_name: ${{ steps.tag.outputs.tag }}
+          name: ${{ steps.tag.outputs.name }}
+          prerelease: ${{ steps.tag.outputs.prerelease }}
+          files: dist/*
+          # Updating an existing release replaces assets with the same name,
+          # which is what a rebuild of the rolling "latest" tag should do.
+          generate_release_notes: ${{ startsWith(github.ref, 'refs/tags/') }}

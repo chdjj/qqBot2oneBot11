@@ -8,7 +8,13 @@ const BASE = process.env.BASE || 'http://127.0.0.1:18080';
 const html = fs.readFileSync(WEB + 'index.html', 'utf8');
 const dom = new JSDOM(html.replace('/static/app.js', ''), { url: BASE + '/', runScripts: 'outside-only', pretendToBeVisual: true });
 const w = dom.window;
-w.fetch = (i, o) => fetch(String(i).startsWith('http') ? i : BASE + i, o);
+const ADMIN_TOKEN = process.env.ADMIN_TOKEN || '';
+w.fetch = (i, o = {}) => {
+  const url = String(i).startsWith('http') ? i : BASE + i;
+  const headers = { ...(o.headers || {}) };
+  if (ADMIN_TOKEN) headers.Authorization = 'Bearer ' + ADMIN_TOKEN;
+  return fetch(url, { ...o, headers });
+};
 w.WebSocket = class { constructor() { setTimeout(() => this.onopen && this.onopen(), 5); } close() {} };
 w.confirm = () => true;
 vm.runInContext(fs.readFileSync(WEB + 'app.js', 'utf8'), dom.getInternalVMContext(), { filename: 'app.js' });
