@@ -419,13 +419,18 @@ func (s *Store) EnsureOpenID(botID int64, kind, openID string) (int64, error) {
 		return 0, err
 	}
 	if n, perr := parseInt64(openID); perr == nil && n > 0 {
-		// Prefer the real id when it already fits.
-		_, err = s.db.Exec(`INSERT OR IGNORE INTO openid_map(bot_id, kind, open_id, num_id, created_at) VALUES(?,?,?,?,?)`,
-			botID, kind, openID, n, now())
-		if err == nil {
-			var got int64
-			if e := s.db.QueryRow(`SELECT num_id FROM openid_map WHERE bot_id=? AND kind=? AND open_id=?`, botID, kind, openID).Scan(&got); e == nil {
-				return got, nil
+		// Prefer the real id when it is not already taken by another openid.
+		// Probing first avoids leaving a hole in the generated-id sequence.
+		var taken int
+		_ = s.db.QueryRow(`SELECT COUNT(*) FROM openid_map WHERE bot_id=? AND kind=? AND num_id=?`, botID, kind, n).Scan(&taken)
+		if taken == 0 {
+			_, err = s.db.Exec(`INSERT INTO openid_map(bot_id, kind, open_id, num_id, created_at) VALUES(?,?,?,?,?)`,
+				botID, kind, openID, n, now())
+			if err == nil {
+				return n, nil
+			}
+			if !strings.Contains(err.Error(), "UNIQUE") {
+				return 0, err
 			}
 		}
 	}
@@ -433,12 +438,30 @@ func (s *Store) EnsureOpenID(botID int64, kind, openID string) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	_, err = s.db.Exec(`INSERT INTO openid_map(bot_id, kind, open_id, num_id, created_at) VALUES(?,?,?,?,?)`,
-		botID, kind, openID, numID, now())
-	if err != nil {
-		return 0, err
+	// The generated id could collide with a real numeric openid already mapped;
+	// retry a few times before giving up.
+	for i := 0; i < 50; i++ {
+		_, err = s.db.Exec(`INSERT INTO openid_map(bot_id, kind, open_id, num_id, created_at) VALUES(?,?,?,?,?)`,
+			botID, kind, openID, numID, now())
+		if err == nil {
+			return numID, nil
+		}
+		if !strings.Contains(err.Error(), "UNIQUE") {
+			return 0, err
+		}
+		var taken int
+		_ = s.db.QueryRow(`SELECT COUNT(*) FROM openid_map WHERE bot_id=? AND kind=? AND num_id=?`, botID, kind, numID).Scan(&taken)
+		if taken == 0 {
+			// Openid row itself may have been inserted concurrently; that's fine.
+			var existing int64
+			if e := s.db.QueryRow(`SELECT num_id FROM openid_map WHERE bot_id=? AND kind=? AND open_id=?`, botID, kind, openID).Scan(&existing); e == nil {
+				return existing, nil
+			}
+			return 0, err
+		}
+		numID++
 	}
-	return numID, nil
+	return 0, fmt.Errorf("无法为 %s 分配唯一 ID", openID)
 }
 
 func (s *Store) OpenIDByNum(botID int64, kind string, numID int64) (string, error) {
