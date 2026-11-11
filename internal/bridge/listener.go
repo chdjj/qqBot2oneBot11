@@ -288,14 +288,48 @@ func (rt *listenerRuntime) handleHTTP(w http.ResponseWriter, r *http.Request) {
 			rt.cfg.Name, rt.cfg.ID, ellipsis(string(raw))))
 	}
 	var act onebot.Action
-	if err := json.Unmarshal(raw, &act); err != nil {
-		w.WriteHeader(http.StatusBadRequest)
-		_ = json.NewEncoder(w).Encode(onebot.Failed(nil, 400, "无效的 JSON: "+err.Error()))
-		return
+	// An empty body is valid for the "/{action}" style, where all parameters may
+	// live in the query string.
+	if len(bytes.TrimSpace(raw)) > 0 {
+		if err := json.Unmarshal(raw, &act); err != nil {
+			// OneBot also allows urlencoded form parameters on the action URL.
+			if ferr := r.ParseForm(); ferr == nil && len(r.PostForm) > 0 {
+				act = actionFromForm(r, nil)
+			}
+		}
 	}
-	if act.Action == "get_status" && act.Echo != nil {
-		// normal action
+
+	// OneBot 11 defines two URL styles and both must work:
+	//   POST /                 with {"action": "...", "params": {...}}
+	//   POST /{action}         with params at top level (as ?query or body)
+	// Clients of the second style were previously answered with data:null
+	// because the path segment was never turned into an action name.
+	if pathAction := actionFromPath(r.URL.Path, rt.cfg.Path); pathAction != "" {
+		if act.Action == "" {
+			act.Action = pathAction
+		}
+		// Merge top-level params and query args into act.Params.
+		merged := map[string]any{}
+		for k, v := range act.Params {
+			merged[k] = v
+		}
+		if q := r.URL.Query(); len(q) > 0 {
+			for k, vals := range q {
+				if len(vals) > 0 && isParamName(k) {
+					merged[k] = vals[0]
+				}
+			}
+		}
+		if extra := topLevelParams(raw); extra != nil {
+			for k, v := range extra {
+				if _, exists := merged[k]; !exists {
+					merged[k] = v
+				}
+			}
+		}
+		act.Params = merged
 	}
+
 	if act.Action == "" {
 		// Some clients POST events to the API endpoint by mistake; accept silently.
 		_ = json.NewEncoder(w).Encode(onebot.OK(nil, nil))
@@ -688,3 +722,83 @@ func (rt *listenerRuntime) reverseWSOnce(target string) error {
 }
 
 var _ = qq.APIError{}
+
+// actionFromPath extracts the action name from a OneBot "POST /{action}" URL,
+// honouring the listener's configured path prefix. Returns "" for the bare
+// prefix, which means the legacy "POST /" body-carried action style.
+func actionFromPath(urlPath, basePath string) string {
+	p := strings.Trim(urlPath, "/")
+	if base := strings.Trim(basePath, "/"); base != "" {
+		if p == base {
+			return ""
+		}
+		if rest, ok := strings.CutPrefix(p, base+"/"); ok {
+			p = rest
+		} else {
+			return ""
+		}
+	}
+	if p == "" || strings.Contains(p, "/") {
+		return ""
+	}
+	// Reserved non-action endpoints.
+	switch p {
+	case "_events", "events", "api", "event", "universal":
+		return ""
+	}
+	return p
+}
+
+// isParamName filters out the meaning-bearing query keys so they are not
+// forwarded as action parameters.
+func isParamName(k string) bool {
+	switch k {
+	case "access_token", "token", "echo":
+		return false
+	}
+	return k != ""
+}
+
+// topLevelParams reads OneBot-style flat parameters ({"group_id":1,"message":...})
+// from a request body that has no "params" object.
+func topLevelParams(raw []byte) map[string]any {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	out := map[string]any{}
+	for k, v := range m {
+		switch k {
+		case "action", "params", "echo", "access_token", "token":
+			continue
+		}
+		out[k] = v
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+// actionFromForm builds an action from urlencoded form fields.
+func actionFromForm(r *http.Request, pre map[string]any) onebot.Action {
+	out := onebot.Action{Params: map[string]any{}}
+	for k, v := range pre {
+		out.Params[k] = v
+	}
+	for k, vals := range r.PostForm {
+		if len(vals) == 0 {
+			continue
+		}
+		switch k {
+		case "action":
+			out.Action = vals[0]
+		case "echo":
+			out.Echo = vals[0]
+		case "access_token", "token":
+		default:
+			out.Params[k] = vals[0]
+		}
+	}
+	return out
+}

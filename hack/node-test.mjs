@@ -59,6 +59,14 @@ async function main() {
   check('HTTP 带 token 可调用 API', loginInfo.status === 'ok' && loginInfo.data?.user_id,
     JSON.stringify(loginInfo));
 
+  // OneBot 11 also defines POST /{action}; that style must work too.
+  const urlStyle = await fetch('http://127.0.0.1:8081/get_version_info', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer tk-http' },
+  }).then(r => r.json()).catch(() => null);
+  check('POST /{action} 风格可用',
+    urlStyle && urlStyle.status === 'ok' && urlStyle.data && urlStyle.data.protocol_version === 'v11',
+    JSON.stringify(urlStyle));
+
   // --- WS server ---
   const wsL = await j('/api/listeners', { method: 'POST', body: JSON.stringify({
     bot_id: 1, name: 'WS服务器', type: 'ws_server',

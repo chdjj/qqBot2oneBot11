@@ -34,3 +34,53 @@ func TestSelfIDToInt64(t *testing.T) {
 		t.Fatalf("folded id must stay positive, got %d", a)
 	}
 }
+
+func TestActionFromPath(t *testing.T) {
+	cases := []struct{ path, base, want string }{
+		{"/get_version_info", "", "get_version_info"},
+		{"/send_group_msg", "", "send_group_msg"},
+		{"/", "", ""},
+		{"/api/v11/get_version_info", "/api/v11", "get_version_info"},
+		{"/api/v11", "/api/v11", ""},
+		{"/_events", "", ""},
+		{"/get_version_info/", "", "get_version_info"},
+		{"/a/b", "", ""},
+	}
+	for _, c := range cases {
+		if got := actionFromPath(c.path, c.base); got != c.want {
+			t.Fatalf("actionFromPath(%q,%q) = %q, want %q", c.path, c.base, got, c.want)
+		}
+	}
+}
+
+func TestTopLevelParams(t *testing.T) {
+	raw := []byte(`{"group_id":"100000","message":[{"type":"text","data":{"text":"hi"}}],"action":"send_group_msg","echo":"x"}`)
+	p := topLevelParams(raw)
+	if p == nil {
+		t.Fatal("expected params")
+	}
+	if p["group_id"] != "100000" {
+		t.Fatalf("group_id = %#v", p["group_id"])
+	}
+	if _, ok := p["action"]; ok {
+		t.Fatal("action must not leak into params")
+	}
+	if _, ok := p["echo"]; ok {
+		t.Fatal("echo must not leak into params")
+	}
+	// An empty/param-less body must not fabricate params.
+	if topLevelParams([]byte(`{"action":"get_version_info"}`)) != nil {
+		t.Fatal("should return nil when there are no params")
+	}
+}
+
+func TestIsParamName(t *testing.T) {
+	for _, k := range []string{"access_token", "token", "echo"} {
+		if isParamName(k) {
+			t.Fatalf("%q should be excluded", k)
+		}
+	}
+	if !isParamName("group_id") {
+		t.Fatal("group_id should be a param")
+	}
+}
