@@ -139,7 +139,17 @@ type botRequest struct {
 
 type botView struct {
 	store.Bot
-	Runtime qq.Status `json:"runtime"`
+	Secret    string    `json:"secret"` // always empty in responses; see redactedView
+	HasSecret bool      `json:"has_secret"`
+	Runtime   qq.Status `json:"runtime"`
+}
+
+// redactedView strips the AppSecret so the console (and anything that can
+// reach the API) never receives it. A non-empty secret on write means "set".
+func redactedView(b store.Bot, st qq.Status) botView {
+	v := botView{Bot: b, Runtime: st, HasSecret: b.Secret != ""}
+	v.Bot.Secret = ""
+	return v
 }
 
 func (s *Server) bots(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +162,7 @@ func (s *Server) bots(w http.ResponseWriter, r *http.Request) {
 		}
 		views := make([]botView, 0, len(bots))
 		for _, b := range bots {
-			views = append(views, botView{Bot: b, Runtime: s.runtimeStatus(b.ID)})
+			views = append(views, redactedView(b, s.runtimeStatus(b.ID)))
 		}
 		writeJSON(w, http.StatusOK, views)
 	case http.MethodPost:
@@ -202,18 +212,27 @@ func (s *Server) botByID(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == http.MethodGet && action == "":
-		writeJSON(w, http.StatusOK, botView{Bot: b, Runtime: s.runtimeStatus(id)})
+		writeJSON(w, http.StatusOK, redactedView(b, s.runtimeStatus(id)))
 	case r.Method == http.MethodPut && action == "":
 		var req botRequest
 		if err := decodeBody(r, &req); err != nil {
 			writeErr(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
 			return
 		}
-		if strings.TrimSpace(req.AppID) == "" || strings.TrimSpace(req.Secret) == "" {
-			writeErr(w, http.StatusBadRequest, "AppID 和 AppSecret 不能为空")
+		if strings.TrimSpace(req.AppID) == "" {
+			writeErr(w, http.StatusBadRequest, "AppID 不能为空")
 			return
 		}
-		b.Name, b.AppID, b.Secret, b.Sandbox = req.Name, req.AppID, req.Secret, req.Sandbox
+		// An empty secret on edit means "keep the existing one", since responses
+		// never reveal it.
+		if strings.TrimSpace(req.Secret) == "" && b.Secret == "" {
+			writeErr(w, http.StatusBadRequest, "AppSecret 不能为空")
+			return
+		}
+		b.Name, b.AppID, b.Sandbox = req.Name, req.AppID, req.Sandbox
+		if s := strings.TrimSpace(req.Secret); s != "" {
+			b.Secret = s
+		}
 		if req.Intents != 0 {
 			b.Intents = req.Intents
 		}

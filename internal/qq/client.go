@@ -36,6 +36,12 @@ func (e *APIError) Error() string {
 	if code == 0 {
 		code = e.ErrCode
 	}
+	if hint := authErrorHint(code); hint != "" {
+		if e.Message == "" {
+			return hint
+		}
+		return e.Message + "（" + hint + "）"
+	}
 	if e.Message == "" {
 		return fmt.Sprintf("qq api error: http %d", e.Status)
 	}
@@ -304,6 +310,30 @@ func (c *Client) SelfInfo(ctx context.Context) (id, username string, err error) 
 		return "", "", err
 	}
 	return out.ID, out.Username, nil
+}
+
+// authErrorHint explains the platform's credential error codes in Chinese so
+// the console can show something actionable.
+func authErrorHint(code int) string {
+	switch code {
+	case 100007:
+		return "AppID 无效，请检查开放平台的 AppID"
+	case 100010:
+		return "AppSecret 无效或与 AppID 不匹配"
+	case 100015:
+		return "access_token 无效或已过期"
+	case 100016:
+		return "access_token 已过期，正在尝试刷新"
+	case 10004:
+		return "机器人不存在或凭据不正确"
+	case 11241:
+		return "机器人已被禁用"
+	case 11242:
+		return "机器人已被封禁"
+	case 11243:
+		return "机器人未上线或不支持该能力"
+	}
+	return ""
 }
 
 func truncate(s string, n int) string {

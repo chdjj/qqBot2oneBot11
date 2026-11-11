@@ -457,13 +457,14 @@ function closeModal() { $('#modal').hidden = true; $('#modal-form').onsubmit = n
 /* ---------- bot dialogs ---------- */
 
 function botFormHTML(b) {
+  const editing = b.id != null;
   return `
     <label class="field"><span>显示名称（可选）</span>
       <input name="name" value="${esc(b.name || '')}" placeholder="例如 社区助手"></label>
     <label class="field"><span>AppID</span>
       <input name="app_id" required value="${esc(b.app_id || '')}" placeholder="开放平台提供的 AppID"></label>
-    <label class="field"><span>AppSecret</span>
-      <input name="secret" required type="password" value="${esc(b.secret || '')}" placeholder="开放平台提供的 AppSecret"></label>
+    <label class="field"><span>AppSecret${editing ? '（留空保持不变）' : ''}</span>
+      <input name="secret" type="password" ${editing ? '' : 'required'} value="" placeholder="${editing && b.has_secret ? '已保存，留空则不修改' : '开放平台提供的 AppSecret'}"></label>
     <div class="grid-2">
       <label class="check"><input type="checkbox" name="sandbox" ${b.sandbox ? 'checked' : ''}><span>使用沙箱环境</span></label>
       <label class="check"><input type="checkbox" name="enabled" ${b.enabled ? 'checked' : ''}><span>保存后立即启动</span></label>
