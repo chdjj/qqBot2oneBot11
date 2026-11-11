@@ -35,6 +35,15 @@ qqbot-onebot.exe -addr 127.0.0.1:8080
 | 参数 | 默认值 | 说明 |
 | --- | --- | --- |
 | `-addr` | `127.0.0.1:8080` | 控制台监听地址；对外网开放时务必加防火墙或反向代理 |
+
+## 安全说明
+
+控制台 API **本身不带登录**，默认只监听 `127.0.0.1`。它能够修改机器人凭据、读取群 openid、发送消息，因此：
+
+- 不要把 `-addr` 改成 `0.0.0.0` 后直接暴露到公网。若必须远程访问，请用反向代理加 HTTP 基本认证，或通过 SSH 隧道。
+- AppSecret 只写入、不读出：`/api/bots` 响应里的 `secret` 恒为空，并给出 `has_secret` 标记；编辑时留空表示保持原值。
+- 数据库文件 `data/qqbot-onebot.db` 含明文 AppSecret，请限制其文件权限并排除在备份/版本库之外（`.gitignore` 已排除 `data/`）。
+- OneBot 监听请设置 Token；反向 WS 与 HTTP 上报都会带上它。
 | `-db` | `data/qqbot-onebot.db` | SQLite 数据库路径 |
 | `-debug` | `false` | 输出调试日志 |
 
