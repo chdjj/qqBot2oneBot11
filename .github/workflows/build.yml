@@ -156,25 +156,23 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
+          # Pass the name through env rather than a shell variable: this keeps
+          # the value out of the fragile $ interpolation inside -ldflags.
+          BIN: qqbot-onebot-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}
+          IS_TAG: ${{ startsWith(github.ref, 'refs/tags/') }}
+          REF_NAME: ${{ github.ref_name }}
+          SHORT_SHA: ${{ github.sha }}
         run: |
-          name="qqbot-onebot-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
-          # The version tag is decided by the publish job, which runs after
-          # this build, so the binary cannot carry it. Use the tag name when
-          # building a tag, else a readable build identifier; the release page
-          # and SHA256SUMS.txt carry the v0.N mapping.
-          if [[ "\${GITHUB_REF}" == refs/tags/* ]]; then
-            ver="\${GITHUB_REF#refs/tags/}"
+          set -euo pipefail
+          mkdir -p dist
+          if [ "$IS_TAG" = "true" ]; then
+            VER="$REF_NAME"
           else
-            ver="dev-\${GITHUB_SHA::7}"
+            VER="dev-${SHORT_SHA:0:7}"
           fi
-          echo "embedding version: \$ver"
-          go build -trimpath -ldflags "\
-            -s -w \
-            -X qqbotonebot/internal/buildinfo.Version=\$ver \
-            -X qqbotonebot/internal/buildinfo.Commit=\${GITHUB_SHA::7} \
-            -X qqbotonebot/internal/buildinfo.Date=$(date -u +%Y-%m-%d)" \
-            -o "dist/\$name" ./cmd/qqbot-onebot
-          ls -lh "dist/\$name"
+          echo "embedding version: $VER (binary: $BIN)"
+          go build -trimpath -ldflags "-s -w -X qqbotonebot/internal/buildinfo.Version=$VER -X qqbotonebot/internal/buildinfo.Commit=${SHORT_SHA:0:7} -X qqbotonebot/internal/buildinfo.Date=$(date -u +%Y-%m-%d)" -o "dist/$BIN" ./cmd/qqbot-onebot
+          ls -lh "dist/$BIN"
 
       - uses: actions/upload-artifact@v4
         with:
