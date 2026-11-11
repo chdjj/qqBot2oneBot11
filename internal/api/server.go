@@ -540,6 +540,12 @@ func (s *Server) testMessage(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "请提供群 openid")
 		return
 	}
+	// A purely numeric value is a QQ 群号; the official API cannot address it.
+	if isAllDigits(openID) {
+		writeErr(w, http.StatusBadRequest, fmt.Sprintf(
+			"%s 看起来是 QQ 群号，不是群 openid。请先在群里 @ 机器人发送一条消息，让适配器记录该群 openid。", openID))
+		return
+	}
 	msg := strings.TrimSpace(req.Message)
 	if msg == "" {
 		writeErr(w, http.StatusBadRequest, "消息内容不能为空")
@@ -581,6 +587,18 @@ func (s *Server) events(w http.ResponseWriter, r *http.Request) {
 		events = []bridge.ConsoleEvent{}
 	}
 	writeJSON(w, http.StatusOK, events)
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func displayName(name, appID string) string {

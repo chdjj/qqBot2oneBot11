@@ -108,11 +108,19 @@
           </div>
         </div>
         <div id="group-list" class="stack"></div>
-        <p class="empty" id="group-empty" hidden>
-          暂无记录。让机器人在群里收到一条 @ 消息，或手动粘贴群 openid。
-        </p>
+        <div class="empty" id="group-empty" hidden>
+          <p>还没有记录到任何群 openid。它不是 QQ 群号，只能从事件里获得：</p>
+          <ol class="steps">
+            <li>确认机器人在群里，并在「官方机器人」页显示「已连接」。</li>
+            <li>在群里 <b>@ 机器人</b> 发送任意一句话，openid 会自动出现在这里。</li>
+            <li>或者把机器人重新拉进群，入群事件也会记录。</li>
+            <li>已知 openid 时，用右上角「手动添加 openid」直接粘贴。</li>
+          </ol>
+        </div>
       </div>
       <aside class="notes">
+        <h3>openid 与群号的区别</h3>
+        <p>QQ 群号（如 <code>1075750473</code>）由用户可见、可直接搜群，但官方机器人接口无法用它发消息。openid 形如 <code>A1B2C3D4E5F6A7B8</code>，与<b>具体机器人绑定</b>：同一个群换了机器人就是另一套 openid。</p>
         <h3>为什么群 ID 是数字</h3>
         <p>OneBot 的 <code>group_id</code> 是整数。适配器为每个 QQ 群 openid 维护一个稳定的数字 ID，插件用数字即可，适配器在发送时自动换回 openid。若 openid 本身是纯数字，则直接使用它。</p>
         <h3>主动消息频控</h3>
@@ -126,7 +134,9 @@
         <form id="test-form" class="form">
           <label class="field"><span>机器人</span><select id="test-bot" required></select></label>
           <label class="field"><span>目标群</span><select id="test-group"></select></label>
+          <div class="field-hint-box" id="test-group-hint" hidden></div>
           <label class="field"><span>或直接填写群 openid</span><input id="test-openid" placeholder="例如 A1B2C3D4E5F6..."></label>
+          <p class="field-hint">这里要填的是<b>群 openid</b>，不是 QQ 群号。openid 只在机器人收到该群消息后才会出现。</p>
           <label class="field"><span>消息内容</span><textarea id="test-message" rows="5" placeholder="这是一条来自适配器控制台的测试消息。"></textarea></label>
           <label class="check"><input type="checkbox" id="test-markdown"><span>以 Markdown 发送（群消息支持）</span></label>
           <div class="form-foot">
@@ -136,6 +146,16 @@
         </form>
       </div>
       <aside class="notes">
+        <h3>如何获取群 openid</h3>
+        <p>QQ 官方不提供「列出机器人所在群」的接口，openid 与机器人绑定，只能从事件里拿到。按顺序试：</p>
+        <ol class="steps">
+          <li>确认机器人已在群里，且控制台显示「已连接」。</li>
+          <li>在群里 <b>@ 机器人</b> 发送任意一句话 —— openid 会自动记录到「群与 openid」页。</li>
+          <li>或者把机器人重新拉进群，入群事件同样会记录 openid。</li>
+          <li>仍然拿不到时，在「群与 openid」页点「手动添加 openid」粘贴。</li>
+        </ol>
+        <h3>注意</h3>
+        <p>QQ 群号（如 1075750473）不是 openid，填进去会返回 <code>11255 请求的资源不存在</code>。openid 形如 <code>A1B2C3D4E5F6A7B8</code>，并且换一个机器人就是另一套 openid。</p>
         <h3>主动消息失败怎么办</h3>
         <p>错误码 <code>40034102</code> 表示当前没有主动消息权限。可让群成员先 @ 机器人互动，再试；或确认机器人认证状态与频控额度。</p>
       </aside>

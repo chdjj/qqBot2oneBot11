@@ -320,8 +320,28 @@ function syncTestGroups() {
   const groups = state.groups.filter(g => g.bot_id === botID);
   const sel = $('#test-group');
   sel.innerHTML = groups.length
-    ? groups.map(g => `<option value="${esc(g.open_id)}">${esc(g.name || '群')} (${g.num_id})</option>`).join('')
+    ? groups.map(g => `<option value="${esc(g.open_id)}">${esc(g.name || '未命名群')} — openid ${esc(g.open_id)}</option>`).join('')
     : '<option value="">（该机器人暂无已知群）</option>';
+
+  // Explain how to obtain an openid instead of leaving the user guessing.
+  const hint = $('#test-group-hint');
+  if (groups.length) {
+    hint.hidden = true;
+    hint.innerHTML = '';
+    return;
+  }
+  hint.hidden = false;
+  const online = state.bots.find(b => b.id === botID);
+  const isOnline = online && online.runtime && online.runtime.state === 'online';
+  hint.innerHTML = `
+    <p>还没有记录到群 openid。群 openid 不是 QQ 群号，只能从机器人收到的事件里获得：</p>
+    <ol class="steps">
+      <li>${isOnline
+        ? '机器人已连接。请在你想要的那个群里 <b>@ 机器人</b> 发送任意一句话。'
+        : '<b>机器人当前未连接</b>，请先在「官方机器人」页点「启动」，确认状态为「已连接」。'}</li>
+      <li>发完消息后回到本页，目标群下拉框会自动出现这个群。</li>
+      <li>也可以打开「群与 openid」页查看已记录的 openid 并复制。</li>
+    </ol>`;
 }
 
 function renderLogs() {
@@ -706,6 +726,10 @@ function wireEvents() {
       const message = $('#test-message').value;
       if (!openid) throw new Error('请选择群或填写群 openid');
       if (!message.trim()) throw new Error('消息内容不能为空');
+      // A bare numeric id is a QQ 群号, which the official API cannot address.
+      if (/^\d+$/.test(openid)) {
+        throw new Error(`${openid} 看起来是 QQ 群号，不是群 openid。请在群里 @ 机器人发一句话，让适配器自动记录 openid 后再试。`);
+      }
       const r = await api('/api/test-message', { method: 'POST', body: JSON.stringify({
         bot_id, group_openid: openid, message, markdown: $('#test-markdown').checked,
       }) });
