@@ -158,13 +158,23 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           name="qqbot-onebot-${{ matrix.goos }}-${{ matrix.goarch }}${{ matrix.ext }}"
+          # The version tag is decided by the publish job, which runs after
+          # this build, so the binary cannot carry it. Use the tag name when
+          # building a tag, else a readable build identifier; the release page
+          # and SHA256SUMS.txt carry the v0.N mapping.
+          if [[ "\${GITHUB_REF}" == refs/tags/* ]]; then
+            ver="\${GITHUB_REF#refs/tags/}"
+          else
+            ver="dev-\${GITHUB_SHA::7}"
+          fi
+          echo "embedding version: \$ver"
           go build -trimpath -ldflags "\
             -s -w \
-            -X qqbotonebot/internal/buildinfo.Version=${GITHUB_REF_NAME} \
-            -X qqbotonebot/internal/buildinfo.Commit=${GITHUB_SHA::7} \
+            -X qqbotonebot/internal/buildinfo.Version=\$ver \
+            -X qqbotonebot/internal/buildinfo.Commit=\${GITHUB_SHA::7} \
             -X qqbotonebot/internal/buildinfo.Date=$(date -u +%Y-%m-%d)" \
-            -o "dist/$name" ./cmd/qqbot-onebot
-          ls -lh "dist/$name"
+            -o "dist/\$name" ./cmd/qqbot-onebot
+          ls -lh "dist/\$name"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -232,7 +242,13 @@ jobs:
           prerelease: ${{ steps.ver.outputs.prerelease }}
           target_commitish: ${{ github.sha }}
           files: dist/*
-          generate_release_notes: true
+          body: |
+            构建自提交 `${{ github.sha }}`（${{ steps.ver.outputs.short }}）。
+
+            二进制内的版本标识为 `dev-${{ steps.ver.outputs.short }}`，
+            可用 `qqbot-onebot -version` 查看。本 Release 的版本号是 `${{ steps.ver.outputs.tag }}`。
+
+            校验文件：`SHA256SUMS.txt`。
 
       # The rolling "latest" tag keeps a stable download URL for the newest
       # build, while the numbered tags give each release its own identity.
