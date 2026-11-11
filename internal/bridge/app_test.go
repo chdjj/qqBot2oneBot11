@@ -1,6 +1,11 @@
 package bridge
 
-import "testing"
+import (
+	"errors"
+	"testing"
+
+	"qqbotonebot/internal/onebot"
+)
 
 func TestSelfIDToInt64(t *testing.T) {
 	cases := []struct {
@@ -82,5 +87,26 @@ func TestIsParamName(t *testing.T) {
 	}
 	if !isParamName("group_id") {
 		t.Fatal("group_id should be a param")
+	}
+}
+
+func TestStatusCodeToRetCode(t *testing.T) {
+	cases := map[int]int{400: 1400, 401: 1401, 403: 1403, 404: 1404}
+	for status, want := range cases {
+		if got := statusCodeToRetCode(status); got != want {
+			t.Fatalf("%d -> %d, want %d", status, got, want)
+		}
+	}
+}
+
+func TestWSRetCodeForDispatchErrors(t *testing.T) {
+	if got := wsRetCode(&onebot.ErrActionNotFound{Action: "x"}); got != 1404 {
+		t.Fatalf("not found -> %d, want 1404", got)
+	}
+	if got := wsRetCode(&onebot.ErrUnsupported{Action: "x"}); got != 1403 {
+		t.Fatalf("unsupported -> %d, want 1403", got)
+	}
+	if got := wsRetCode(errors.New("other")); got != 1400 {
+		t.Fatalf("other -> %d, want 1400", got)
 	}
 }

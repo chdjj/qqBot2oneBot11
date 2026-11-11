@@ -46,8 +46,9 @@ async function main() {
   const noAuthBody = await noAuth.json().catch(() => null);
   // OneBot implementations answer HTTP 200 with retcode 403 so clients that
   // drop non-2xx bodies still see the error.
+  // Spec: a missing access token is HTTP 401 (retcode 1401 if read from body).
   check('HTTP 拒绝无 token 请求',
-    noAuth.status === 200 && noAuthBody && noAuthBody.retcode === 403,
+    noAuth.status === 401 && noAuthBody && noAuthBody.retcode === 1401,
     `status=${noAuth.status} body=${JSON.stringify(noAuthBody)}`);
 
   const withAuth = await fetch('http://127.0.0.1:8081/', {
@@ -66,6 +67,21 @@ async function main() {
   check('POST /{action} 风格可用',
     urlStyle && urlStyle.status === 'ok' && urlStyle.data && urlStyle.data.protocol_version === 'v11',
     JSON.stringify(urlStyle));
+
+  // Spec: an API the implementation lacks is HTTP 404; a known-but-
+  // unsupported one is HTTP 200 with a non-zero retcode.
+  const unknown = await fetch('http://127.0.0.1:8081/definitely_not_an_api', {
+    method: 'POST', headers: { Authorization: 'Bearer tk-http' },
+  });
+  check('未知 API 返回 404', unknown.status === 404, 'status=' + unknown.status);
+
+  const unsupported = await fetch('http://127.0.0.1:8081/get_friend_list', {
+    method: 'POST', headers: { Authorization: 'Bearer tk-http' },
+  });
+  const unsupportedBody = await unsupported.json().catch(() => null);
+  check('平台不支持的 API 返回 200 + 非零 retcode',
+    unsupported.status === 200 && unsupportedBody && unsupportedBody.retcode === 1403,
+    'status=' + unsupported.status + ' body=' + JSON.stringify(unsupportedBody));
 
   // --- WS server ---
   const wsL = await j('/api/listeners', { method: 'POST', body: JSON.stringify({

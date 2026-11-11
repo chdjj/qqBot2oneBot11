@@ -337,6 +337,27 @@ func Failed(echo any, retCode int, msg string) APIResponse {
 
 func MakeFailed(echo any, msg string) APIResponse { return Failed(echo, 1400, msg) }
 
+// ErrActionNotFound marks an API the implementation does not provide. The
+// transport maps it to the spec's "API does not exist" responses: HTTP 404,
+// and retcode 1404 over WebSocket.
+type ErrActionNotFound struct{ Action string }
+
+func (e *ErrActionNotFound) Error() string { return "不支持的接口: " + e.Action }
+
+// ErrUnsupported marks a known API that this platform cannot provide. It is a
+// business failure (HTTP 200 with a non-zero retcode), not a missing API.
+type ErrUnsupported struct {
+	Action string
+	Reason string
+}
+
+func (e *ErrUnsupported) Error() string {
+	if e.Reason == "" {
+		return "接口不受平台支持: " + e.Action
+	}
+	return e.Reason
+}
+
 // Param helpers tolerate the loose typing OneBot clients send.
 
 func StrParam(p map[string]any, key string) string {

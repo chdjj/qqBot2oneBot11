@@ -14,11 +14,11 @@ import (
 )
 
 // HandleAction executes one OneBot API call for the bot identified by selfID.
-func (a *App) HandleAction(selfID int64, act onebot.Action) onebot.APIResponse {
+func (a *App) HandleAction(selfID int64, act onebot.Action) (onebot.APIResponse, error) {
 	a.counters.actions.Add(1)
 	b := a.botForSelf(selfID)
 	if b == nil {
-		return onebot.Failed(act.Echo, 100, "没有可用的机器人，请在控制台启用并配置 AppID/AppSecret")
+		return onebot.Failed(act.Echo, 100, "没有可用的机器人，请在控制台启用并配置 AppID/AppSecret"), nil
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
@@ -38,19 +38,19 @@ func (a *App) HandleAction(selfID int64, act onebot.Action) onebot.APIResponse {
 			}
 		}
 		if mt == "group" {
-			return a.sendGroup(ctx, b, act.Echo, p)
+			return a.sendGroup(ctx, b, act.Echo, p), nil
 		}
-		return a.sendPrivate(ctx, b, act.Echo, p)
+		return a.sendPrivate(ctx, b, act.Echo, p), nil
 	case "send_group_msg":
-		return a.sendGroup(ctx, b, act.Echo, p)
+		return a.sendGroup(ctx, b, act.Echo, p), nil
 	case "send_private_msg":
-		return a.sendPrivate(ctx, b, act.Echo, p)
+		return a.sendPrivate(ctx, b, act.Echo, p), nil
 	case "delete_msg":
-		return a.deleteMsg(ctx, b, act.Echo, p)
+		return a.deleteMsg(ctx, b, act.Echo, p), nil
 	case "get_msg":
-		return onebot.OK(act.Echo, map[string]any{"message_id": onebot.IntParam(p, "message_id")})
+		return onebot.OK(act.Echo, map[string]any{"message_id": onebot.IntParam(p, "message_id")}), nil
 	case "get_login_info":
-		return onebot.OK(act.Echo, map[string]any{"user_id": b.SelfNum(), "nickname": b.Status().Username})
+		return onebot.OK(act.Echo, map[string]any{"user_id": b.SelfNum(), "nickname": b.Status().Username}), nil
 	case "get_status":
 		st := b.Status()
 		online := st.State == "online"
@@ -58,7 +58,7 @@ func (a *App) HandleAction(selfID int64, act onebot.Action) onebot.APIResponse {
 			"online": online, "good": online,
 			"state": st.State, "message": st.Message,
 			"connected_at": st.ConnectedAt,
-		})
+		}), nil
 	case "get_version_info":
 		// Field names follow the OneBot 11 spec exactly: app_name, app_version,
 		// protocol_version. Clients read protocol_version; a missing key comes
@@ -69,23 +69,58 @@ func (a *App) HandleAction(selfID int64, act onebot.Action) onebot.APIResponse {
 			"protocol_version": "v11",
 			"protocol":         "qqbot-v2",
 			"qqbot_api":        "v2",
-		})
+		}), nil
 	case "get_group_info":
-		return a.groupInfo(ctx, b, act.Echo, p)
+		return a.groupInfo(ctx, b, act.Echo, p), nil
 	case "get_group_list":
-		return a.groupList(b, act.Echo)
+		return a.groupList(b, act.Echo), nil
 	case "get_group_member_info":
-		return onebot.OK(act.Echo, map[string]any{"group_id": onebot.IntParam(p, "group_id"), "user_id": onebot.IntParam(p, "user_id")})
+		return onebot.OK(act.Echo, map[string]any{"group_id": onebot.IntParam(p, "group_id"), "user_id": onebot.IntParam(p, "user_id")}), nil
 	case "get_group_member_list":
-		return onebot.OK(act.Echo, []map[string]any{})
+		return onebot.OK(act.Echo, []map[string]any{}), nil
 	case "can_send_image", "can_send_record":
-		return onebot.OK(act.Echo, map[string]any{"yes": true})
+		return onebot.OK(act.Echo, map[string]any{"yes": true}), nil
 	case "get_image":
-		return onebot.OK(act.Echo, map[string]any{"file": onebot.StrParam(p, "file")})
-	case "set_friend_add_request", "set_group_add_request", "set_restart":
-		return onebot.OK(act.Echo, nil)
+		return onebot.OK(act.Echo, map[string]any{"file": onebot.StrParam(p, "file")}), nil
+	case "set_friend_add_request", "set_group_add_request":
+		// QQ 官方没有「加好友/加群请求」的同意或拒绝接口。
+		return onebot.APIResponse{}, &onebot.ErrUnsupported{
+			Action: act.Action, Reason: act.Action + ": QQ 官方机器人没有好友/入群申请审批接口",
+		}
+	case "set_restart":
+		// Restarting is out of scope: the adapter is supervised externally.
+		return onebot.APIResponse{}, &onebot.ErrUnsupported{
+			Action: act.Action, Reason: "set_restart: 适配器不支持自我重启，请通过外部进程管理器重启",
+		}
+	case "get_friend_list":
+		return onebot.APIResponse{}, &onebot.ErrUnsupported{
+			Action: act.Action, Reason: "get_friend_list: QQ 官方机器人没有好友列表接口",
+		}
+	case "send_like":
+		return onebot.APIResponse{}, &onebot.ErrUnsupported{
+			Action: act.Action, Reason: "send_like: QQ 官方机器人没有点赞接口",
+		}
+	case "get_stranger_info":
+		return onebot.APIResponse{}, &onebot.ErrUnsupported{
+			Action: act.Action, Reason: "get_stranger_info: QQ 官方不提供陌生人资料接口",
+		}
+	case "set_group_card", "set_group_name", "set_group_admin", "set_group_special_title",
+		"set_group_anonymous", "set_group_anonymous_ban", "set_group_leave",
+		"get_group_honor_info":
+		return onebot.APIResponse{}, &onebot.ErrUnsupported{
+			Action: act.Action, Reason: act.Action + ": QQ 官方机器人无对应的群管理接口",
+		}
+	case "get_cookies", "get_csrf_token", "get_credentials":
+		return onebot.APIResponse{}, &onebot.ErrUnsupported{
+			Action: act.Action, Reason: act.Action + ": QQ 官方使用 access_token 鉴权，没有 Cookie/CSRF 体系",
+		}
+	case "get_record", "get_forward_msg", "clean_cache":
+		return onebot.APIResponse{}, &onebot.ErrUnsupported{
+			Action: act.Action, Reason: act.Action + ": QQ 官方无对应接口",
+		}
 	default:
-		return onebot.Failed(act.Echo, 1404, "不支持的接口: "+act.Action)
+		// Missing API: the transport answers 404 (HTTP) or retcode 1404 (WS).
+		return onebot.APIResponse{}, &onebot.ErrActionNotFound{Action: act.Action}
 	}
 }
 

@@ -1,7 +1,9 @@
 package onebot
 
 import (
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -111,5 +113,28 @@ func TestAPIResponseJSON(t *testing.T) {
 	}
 	if !reflect.DeepEqual(f.Data, nil) {
 		t.Fatalf("data should be nil")
+	}
+}
+
+func TestActionNotFoundError(t *testing.T) {
+	err := &ErrActionNotFound{Action: "get_friend_list"}
+	if !strings.Contains(err.Error(), "get_friend_list") {
+		t.Fatalf("message = %q", err.Error())
+	}
+	// It must be distinguishable from a business failure.
+	var target *ErrActionNotFound
+	if !errors.As(error(err), &target) {
+		t.Fatal("errors.As should match")
+	}
+}
+
+func TestUnsupportedError(t *testing.T) {
+	e := &ErrUnsupported{Action: "send_like", Reason: "QQ 官方无点赞接口"}
+	if e.Error() != "QQ 官方无点赞接口" {
+		t.Fatalf("got %q", e.Error())
+	}
+	bare := &ErrUnsupported{Action: "x"}
+	if !strings.Contains(bare.Error(), "x") {
+		t.Fatalf("bare message = %q", bare.Error())
 	}
 }

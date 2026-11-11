@@ -130,20 +130,37 @@ Token 校验接受 `Authorization: Bearer <token>`、`Authorization: Token <toke
 | `send_msg` | ✅ 按 `message_type` 路由 |
 | `send_group_msg` | ✅ |
 | `send_private_msg` | ✅ |
-| `delete_msg` | ✅ 仅限本适配器发出的消息 |
+| `delete_msg` | ✅ 仅限本适配器发出的消息（2 分钟内） |
 | `get_login_info` | ✅ |
 | `get_status` | ✅ |
-| `get_version_info` | ✅ |
+| `get_version_info` | ✅ 含标准要求的 `protocol_version` |
 | `get_group_info` / `get_group_list` | ✅（基于本地已记录群） |
-| `get_group_member_list` / `get_group_member_info` | ⚠️ 返回空（QQ 未开放） |
+| `get_group_member_list` / `get_group_member_info` | ⚠️ 返回空（QQ 官方接口存在但需白名单） |
+| `get_msg` / `get_image` | ⚠️ 回显入参，未做实质查询 |
 | `can_send_image` / `can_send_record` | ✅ |
-| 其余 | 返回 `retcode 1404` |
+| `get_friend_list`、`send_like`、`set_group_card`、`set_group_name`、`set_group_admin`、`set_group_ban`、`set_group_kick`、`get_cookies` 等 | ❌ QQ 官方无对应能力，返回 `retcode 1403` 并说明原因 |
+| 未列出的动作 | ❌ 返回 HTTP 404 / `retcode 1404`（标准规定的「API 不存在」） |
+
+**标准的状态码约定**（本适配器完全遵循）：
+
+| 情形 | HTTP | WebSocket `retcode` |
+| --- | --- | --- |
+| 未提供 access token | `401` | `1401` |
+| access token 不正确 | `403` | `1403` |
+| Content-Type 不支持 | `406` | `1400` |
+| 请求体格式错误 | `400` | `1400` |
+| **API 不存在** | **`404`** | **`1404`** |
+| 其余（含业务失败） | `200` | 非 0 的失败码 |
+
+因此判断「适配器有没有这个能力」看 HTTP 404 / 1404；判断「这次调用成不成」看 HTTP 200 下的 `retcode`。
 
 ### 消息段
 
-- `text`、`at`（`@全体成员` 不支持）、`image`、`record`、`video`、`file` → 转换为 QQ v2 消息
+- `text`、`at`、`image`、`record`、`video`、`file` → 转换为 QQ v2 消息
+- `at` 的 `qq=all` → `<qqbot-at-everyone />`（需机器人是群管理员，每群每天 1 次；失败时自动去掉标签重发正文）
+- `at` 指定用户 → 退化为纯文本 `@昵称`（OneBot 的 `user_id` 并非 `member_openid`，且群聊纯文本不支持该标记）
 - `markdown` → 以 QQ 的 Markdown 消息（`msg_type=2`）发送，需带 `content`
-- 媒体段需要**可访问的 URL**（QQ 服务端会自行下载转存）；一次只能发一个媒体
+- 媒体段需要**可访问的 URL**（QQ 服务端会自行下载转存），或 `base64://` 直传（≤5MB）；一次只能发一个媒体
 - `json`、`xml`、`share`、`music` 等段不支持发送，返回明确错误
 - 纯文本超过 **4000 字符**时自动按行分块续发，返回最后一块的 `message_id`
 

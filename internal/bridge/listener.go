@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -232,11 +233,30 @@ func (rt *listenerRuntime) unauthorized(w http.ResponseWriter, r *http.Request) 
 		rt.cfg.Name, rt.cfg.ID, transportName(rt.cfg.Type), r.Method, r.URL.Path,
 		hint, redactToken(rt.cfg.Token)))
 	w.Header().Set("Content-Type", "application/json")
-	// Answer with HTTP 200 and retcode 403, matching go-cqhttp and most OneBot
-	// implementations. Clients that discard the body of a non-2xx response
-	// would otherwise report "result is null" instead of the real error.
-	w.WriteHeader(http.StatusOK)
-	_ = json.NewEncoder(w).Encode(onebot.Failed(nil, 403, "token 验证失败"))
+	// Follow the spec: 401 when no access token was supplied, 403 when one was
+	// supplied but is wrong.
+	status := http.StatusForbidden
+	if presented == "" {
+		status = http.StatusUnauthorized
+	}
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(onebot.Failed(nil, statusCodeToRetCode(status), "token 验证失败"))
+}
+
+// statusCodeToRetCode maps an HTTP status onto the WebSocket retcode scale that
+// OneBot uses for the same condition (1400/1401/1403/1404).
+func statusCodeToRetCode(status int) int {
+	switch status {
+	case http.StatusBadRequest:
+		return 1400
+	case http.StatusUnauthorized:
+		return 1401
+	case http.StatusForbidden:
+		return 1403
+	case http.StatusNotFound:
+		return 1404
+	}
+	return 1400
 }
 
 // transportName renders a listener type for logs.
@@ -272,6 +292,14 @@ func (rt *listenerRuntime) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	case http.MethodPost:
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	// Spec: an unsupported POST Content-Type is 406. An empty Content-Type is
+	// tolerated because plenty of clients omit it on parameter-less actions.
+	if ct := r.Header.Get("Content-Type"); ct != "" && !isSupportedContentType(ct) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotAcceptable)
+		_ = json.NewEncoder(w).Encode(onebot.Failed(nil, 1400, "不支持的 Content-Type: "+ct))
 		return
 	}
 	raw, err := io.ReadAll(r.Body)
@@ -337,10 +365,37 @@ func (rt *listenerRuntime) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	rt.traceReceive("HTTP", act.Action, act, act.Echo)
 	start := time.Now()
-	resp := rt.app.HandleAction(rt.bot.SelfNum(), act)
+	resp, err := rt.app.HandleAction(rt.bot.SelfNum(), act)
+	if err != nil {
+		rt.writeActionError(w, act, err)
+		return
+	}
 	rt.traceReply("HTTP", act.Action, resp)
 	rt.app.Log("debug", "API "+act.Action+": "+map[bool]string{true: "ok", false: "failed"}[resp.Status == "ok"]+
 		" 耗时="+time.Since(start).String())
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// writeActionError renders a failed action per the OneBot 11 spec: an unknown
+// API is HTTP 404 (the status code is the signal), while a known-but-unsupported
+// API is an ordinary business failure (HTTP 200 with a non-zero retcode).
+func (rt *listenerRuntime) writeActionError(w http.ResponseWriter, act onebot.Action, err error) {
+	var notFound *onebot.ErrActionNotFound
+	if errors.As(err, &notFound) {
+		rt.app.Log("debug", "API "+act.Action+": 未实现，按标准返回 404")
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		// Spec: no body is required, but a short JSON message helps debugging.
+		_ = json.NewEncoder(w).Encode(onebot.Failed(act.Echo, 1404, notFound.Error()))
+		return
+	}
+	var unsupported *onebot.ErrUnsupported
+	retCode := 1400
+	if errors.As(err, &unsupported) {
+		retCode = 1403
+	}
+	resp := onebot.Failed(act.Echo, retCode, err.Error())
+	rt.traceReply("HTTP", act.Action, resp)
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
@@ -556,7 +611,10 @@ func (rt *listenerRuntime) handleWSServer(w http.ResponseWriter, r *http.Request
 		}
 		rt.traceReceive("WS", act.Action, act, act.Echo)
 		start := time.Now()
-		resp := rt.app.HandleAction(rt.bot.SelfNum(), act)
+		resp, aerr := rt.app.HandleAction(rt.bot.SelfNum(), act)
+		if aerr != nil {
+			resp = onebot.Failed(act.Echo, wsRetCode(aerr), aerr.Error())
+		}
 		rt.traceReply("WS", act.Action, resp)
 		rt.app.Log("debug", fmt.Sprintf("WS 动作 %s 耗时=%s", act.Action, time.Since(start).String()))
 		out, _ := json.Marshal(resp)
@@ -713,7 +771,10 @@ func (rt *listenerRuntime) reverseWSOnce(target string) error {
 		}
 		rt.traceReceive("反向WS", act.Action, act, act.Echo)
 		start := time.Now()
-		resp := rt.app.HandleAction(rt.bot.SelfNum(), act)
+		resp, aerr := rt.app.HandleAction(rt.bot.SelfNum(), act)
+		if aerr != nil {
+			resp = onebot.Failed(act.Echo, wsRetCode(aerr), aerr.Error())
+		}
 		rt.traceReply("反向WS", act.Action, resp)
 		rt.app.Log("debug", fmt.Sprintf("反向WS 动作 %s 耗时=%s", act.Action, time.Since(start).String()))
 		out, _ := json.Marshal(resp)
@@ -801,4 +862,29 @@ func actionFromForm(r *http.Request, pre map[string]any) onebot.Action {
 		}
 	}
 	return out
+}
+
+// wsRetCode maps a dispatch error onto the WebSocket retcode scale defined by
+// the spec (HTTP status codes shifted into the 1xxx range).
+func wsRetCode(err error) int {
+	var notFound *onebot.ErrActionNotFound
+	if errors.As(err, &notFound) {
+		return 1404
+	}
+	var unsupported *onebot.ErrUnsupported
+	if errors.As(err, &unsupported) {
+		return 1403
+	}
+	return 1400
+}
+
+// isSupportedContentType accepts the two encodings the spec allows for API
+// calls: JSON and urlencoded forms.
+func isSupportedContentType(ct string) bool {
+	base := strings.TrimSpace(strings.Split(ct, ";")[0])
+	switch strings.ToLower(base) {
+	case "application/json", "application/x-www-form-urlencoded":
+		return true
+	}
+	return false
 }
