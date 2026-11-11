@@ -181,12 +181,17 @@ function renderOverview() {
 }
 
 function feedBody(ev) {
-  const kind = ev.message_type === 'group' ? '群' : ev.message_type === 'private' ? '单聊' : '';
-  const target = ev.message_type === 'group' ? `群 ${esc(ev.group_id)}` : `用户 ${esc(ev.user_id)}`;
   if (ev.post_type === 'message') {
-    return `<b>${kind}</b> ${target} · ${esc(ev.summary || '(空消息)')}`;
+    if (ev.message_type === 'group') {
+      return `<b>群聊</b> ${esc(ev.group_id)} · ${esc(ev.summary || '(空消息)')}`;
+    }
+    if (ev.message_type === 'private') {
+      return `<b>单聊</b> ${esc(ev.user_id)} · ${esc(ev.summary || '(空消息)')}`;
+    }
+    return `<b>消息</b> · ${esc(ev.summary || '(空消息)')}`;
   }
-  return `${esc(ev.post_type)} ${target} · ${esc(ev.summary || '')}`;
+  const target = ev.group_id ? `群 ${esc(ev.group_id)}` : (ev.user_id ? `用户 ${esc(ev.user_id)}` : '');
+  return `${esc(ev.post_type)} ${target} · ${esc(ev.summary || '')}`.trim();
 }
 
 function statusTag(b) {

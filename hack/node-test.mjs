@@ -123,8 +123,9 @@ async function main() {
     bot_id: 1, name: '反向WS', type: 'ws_client',
     url: 'ws://127.0.0.1:8090/ws', token: 'rev-token', enabled: true,
   }) });
-  await sleep(2000);
-  check('反向 WS 已连接', reverseConn !== null);
+  // The reverse client backs off on the first failed dial, so poll briefly.
+  for (let i = 0; i < 20 && !reverseConn; i++) await sleep(500);
+  check('反向 WS 已连接', reverseConn !== null, reverseConn ? '' : 'timed out after 10s');
 
   if (reverseConn) {
     reverseConn.send(JSON.stringify({ action: 'get_version_info', echo: 'rev-1' }));

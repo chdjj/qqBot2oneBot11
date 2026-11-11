@@ -289,7 +289,13 @@ type listenerRequest struct {
 	Enabled bool   `json:"enabled"`
 }
 
-func validateListener(l *store.Listener) error {
+func (s *Server) validateListener(l *store.Listener) error {
+	if l.BotID == 0 {
+		return fmt.Errorf("请选择所属机器人")
+	}
+	if _, err := s.app.Store().GetBot(l.BotID); err != nil {
+		return fmt.Errorf("机器人不存在（ID %d）", l.BotID)
+	}
 	switch l.Type {
 	case store.ListenerHTTPServer, store.ListenerHTTPSSE, store.ListenerWSServer:
 		if l.Port <= 0 || l.Port > 65535 {
@@ -305,9 +311,6 @@ func validateListener(l *store.Listener) error {
 		}
 	default:
 		return fmt.Errorf("未知的监听类型")
-	}
-	if l.BotID == 0 {
-		return fmt.Errorf("请选择所属机器人")
 	}
 	return nil
 }
@@ -336,7 +339,7 @@ func (s *Server) listeners(w http.ResponseWriter, r *http.Request) {
 				l.URL = l.PostURL
 			}
 		}
-		if err := validateListener(&l); err != nil {
+		if err := s.validateListener(&l); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -374,7 +377,7 @@ func (s *Server) listenerByID(w http.ResponseWriter, r *http.Request) {
 		oldBot := l.BotID
 		l.BotID, l.Name, l.Type, l.Host, l.Port, l.Path, l.URL, l.PostURL, l.Token, l.Enabled =
 			req.BotID, req.Name, req.Type, req.Host, req.Port, req.Path, req.URL, req.PostURL, req.Token, req.Enabled
-		if err := validateListener(&l); err != nil {
+		if err := s.validateListener(&l); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
 		}
