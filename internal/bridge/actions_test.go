@@ -212,3 +212,29 @@ func TestMediaUploadBody(t *testing.T) {
 		t.Fatalf("url upload body = %v", b)
 	}
 }
+
+func TestVersionInfoFieldsMatchOneBot11(t *testing.T) {
+	// The spec names these app_name / app_version / protocol_version. Clients
+	// index them by name, and a missing key becomes null before a getString()
+	// call NPEs (this is exactly how a Java client failed in practice).
+	resp := onebot.OK("e", map[string]any{
+		"app_name":         "qqbot-onebot",
+		"app_version":      buildVersion,
+		"protocol_version": "v11",
+		"protocol":         "qqbot-v2",
+		"qqbot_api":        "v2",
+	})
+	data, ok := resp.Data.(map[string]any)
+	if !ok {
+		t.Fatalf("data is %T", resp.Data)
+	}
+	for _, k := range []string{"app_name", "app_version", "protocol_version"} {
+		v, exists := data[k]
+		if !exists {
+			t.Fatalf("missing required field %q", k)
+		}
+		if s, isStr := v.(string); !isStr || s == "" {
+			t.Fatalf("field %q must be a non-empty string, got %#v", k, v)
+		}
+	}
+}

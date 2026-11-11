@@ -60,7 +60,16 @@ func (a *App) HandleAction(selfID int64, act onebot.Action) onebot.APIResponse {
 			"connected_at": st.ConnectedAt,
 		})
 	case "get_version_info":
-		return onebot.OK(act.Echo, map[string]any{"app_name": "qqbot-onebot", "app_version": buildVersion, "protocol": "qqbot-v2"})
+		// Field names follow the OneBot 11 spec exactly: app_name, app_version,
+		// protocol_version. Clients read protocol_version; a missing key comes
+		// back as null in their JSON parser and then NPEs.
+		return onebot.OK(act.Echo, map[string]any{
+			"app_name":         "qqbot-onebot",
+			"app_version":      buildVersion,
+			"protocol_version": "v11",
+			"protocol":         "qqbot-v2",
+			"qqbot_api":        "v2",
+		})
 	case "get_group_info":
 		return a.groupInfo(ctx, b, act.Echo, p)
 	case "get_group_list":
