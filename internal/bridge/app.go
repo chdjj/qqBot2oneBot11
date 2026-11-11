@@ -20,6 +20,13 @@ func parseInt64(s string) (int64, error) {
 	return strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 }
 
+func displayLabel(rec store.Bot) string {
+	if strings.TrimSpace(rec.Name) != "" {
+		return rec.Name
+	}
+	return "机器人 " + rec.AppID
+}
+
 // RecentIncoming remembers the last inbound message of a chat so replies can go
 // out as passive replies (QQ only allows active messages under strict quotas).
 type RecentIncoming struct {
@@ -167,6 +174,7 @@ func (a *App) StartBot(id int64) error {
 	b.gw = &qq.Gateway{Client: b.client, Intents: intents}
 	b.gw.OnStatus = func(st qq.Status) {
 		b.mu.Lock()
+		prev := b.status
 		b.status = st
 		if st.SelfID != "" {
 			b.selfUsername = st.Username
@@ -180,6 +188,16 @@ func (a *App) StartBot(id int64) error {
 		}
 		b.mu.Unlock()
 		a.publishJSON(map[string]any{"type": "status", "bot_id": id, "status": st})
+		// Surface transitions in the log so failures are visible without
+		// opening the bot's detail view.
+		switch {
+		case st.State == "error" && prev.State != "error":
+			a.Log("error", fmt.Sprintf("%s 网关错误: %s", displayLabel(rec), st.Message))
+		case st.State == "online" && prev.State != "online":
+			a.Log("info", fmt.Sprintf("%s 已连接 QQ 网关（%s）", displayLabel(rec), st.Username))
+		case st.State == "offline" && prev.State != "offline":
+			a.Log("info", fmt.Sprintf("%s 网关已离线", displayLabel(rec)))
+		}
 	}
 	b.gw.OnEvent = func(ev *qq.Event) { a.handleQQEvent(b, ev) }
 	b.gw.Start()
