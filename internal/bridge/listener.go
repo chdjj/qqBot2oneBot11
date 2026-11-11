@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 
@@ -164,6 +165,12 @@ func (rt *listenerRuntime) startServer() error {
 			Subprotocols: []string{"onebot.v11"},
 		}
 		handler := func(w http.ResponseWriter, r *http.Request) {
+			// A plain HTTP POST to a WS port is almost always a misconfiguration;
+			// answer with the OneBot action anyway so it can be debugged with curl.
+			if !websocket.IsWebSocketUpgrade(r) {
+				rt.handleHTTP(w, r)
+				return
+			}
 			rt.handleWSServer(w, r, &upgrader)
 		}
 		mux.HandleFunc(rt.route("/"), handler)
@@ -236,6 +243,13 @@ func (rt *listenerRuntime) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(onebot.Failed(nil, 400, "读取请求体失败"))
 		return
 	}
+	// Shells on Windows often send GBK bytes, which decode to mojibake. Say so
+	// explicitly instead of letting the user blame the adapter.
+	if !utf8.Valid(raw) {
+		rt.app.Log("warn", fmt.Sprintf(
+			"[%s/#%d HTTP] 请求体不是合法的 UTF-8（很可能是 curl/PowerShell 的终端编码问题，而非适配器）：%s",
+			rt.cfg.Name, rt.cfg.ID, ellipsis(string(raw))))
+	}
 	var act onebot.Action
 	if err := json.Unmarshal(raw, &act); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -250,8 +264,12 @@ func (rt *listenerRuntime) handleHTTP(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(onebot.OK(nil, nil))
 		return
 	}
+	rt.traceReceive("HTTP", act.Action, act, act.Echo)
+	start := time.Now()
 	resp := rt.app.HandleAction(rt.bot.SelfNum(), act)
-	rt.app.Log("debug", "API "+act.Action+": "+map[bool]string{true: "ok", false: "failed"}[resp.Status == "ok"])
+	rt.traceReply("HTTP", act.Action, resp)
+	rt.app.Log("debug", "API "+act.Action+": "+map[bool]string{true: "ok", false: "failed"}[resp.Status == "ok"]+
+		" 耗时="+time.Since(start).String())
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
@@ -329,6 +347,23 @@ func (rt *listenerRuntime) handleSSE(w http.ResponseWriter, r *http.Request) {
 // handleHTTPEvents for GET on the main path: serve a single flush of events
 // (OneBot HTTP API does not define GET semantics, so return 204 politely).
 func (rt *listenerRuntime) sendEvent(data []byte) {
+	// Trace every outbound event once, regardless of transport.
+	if rt.traceEnabled() {
+		var ev onebot.Event
+		transport := map[string]string{
+			store.ListenerHTTPSSE:    "SSE",
+			store.ListenerHTTPServer: "HTTP",
+			store.ListenerWSServer:   "WS",
+			store.ListenerWSClient:   "反向WS",
+			store.ListenerHTTPClient: "HTTP上报",
+		}[rt.cfg.Type]
+		if err := json.Unmarshal(data, &ev); err == nil {
+			rt.traceEvent(transport, ev)
+		} else {
+			rt.traceRaw(transport, "→ 原始事件", string(data))
+		}
+	}
+
 	// fan out depending on transport
 	switch rt.cfg.Type {
 	case store.ListenerHTTPSSE:
@@ -383,6 +418,9 @@ func (rt *listenerRuntime) sendEvent(data []byte) {
 func (rt *listenerRuntime) writeWS(c *websocket.Conn, data []byte) {
 	rt.connMu.Lock()
 	defer rt.connMu.Unlock()
+	if rt.traceEnabled() {
+		rt.app.Log("debug", fmt.Sprintf("[%s/#%d WS] → 发送帧 %s", rt.cfg.Name, rt.cfg.ID, ellipsis(string(data))))
+	}
 	_ = c.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := c.WriteMessage(websocket.TextMessage, data); err != nil {
 		_ = c.Close()
@@ -428,7 +466,13 @@ func (rt *listenerRuntime) handleWSServer(w http.ResponseWriter, r *http.Request
 	for {
 		var raw json.RawMessage
 		if err := conn.ReadJSON(&raw); err != nil {
+			if rt.traceEnabled() {
+				rt.traceRaw("WS", "✕ 连接关闭", err.Error())
+			}
 			return
+		}
+		if rt.traceEnabled() {
+			rt.traceRaw("WS", "← 收到帧", string(raw))
 		}
 		if role == "event" {
 			continue
@@ -439,7 +483,11 @@ func (rt *listenerRuntime) handleWSServer(w http.ResponseWriter, r *http.Request
 			rt.writeWS(conn, resp)
 			continue
 		}
+		rt.traceReceive("WS", act.Action, act, act.Echo)
+		start := time.Now()
 		resp := rt.app.HandleAction(rt.bot.SelfNum(), act)
+		rt.traceReply("WS", act.Action, resp)
+		rt.app.Log("debug", fmt.Sprintf("WS 动作 %s 耗时=%s", act.Action, time.Since(start).String()))
 		out, _ := json.Marshal(resp)
 		rt.writeWS(conn, out)
 	}
@@ -474,13 +522,22 @@ func (rt *listenerRuntime) httpClientLoop() {
 					req.Header.Set("Authorization", "Token "+rt.cfg.Token)
 				}
 				req.Header.Set("X-Self-ID", strconv.FormatInt(rt.bot.SelfNum(), 10))
+				if rt.traceEnabled() {
+					rt.traceRaw("HTTP上报", "→ POST "+target, string(data))
+				}
 				resp, err := hc.Do(req)
 				if err != nil {
 					rt.app.Log("warn", fmt.Sprintf("上报事件到 %s 失败: %v", target, err))
 					return
 				}
-				io.Copy(io.Discard, resp.Body)
+				body, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 				resp.Body.Close()
+				if rt.traceEnabled() {
+					rt.traceRaw("HTTP上报", fmt.Sprintf("← HTTP %d", resp.StatusCode), string(body))
+				}
+				if resp.StatusCode >= 400 {
+					rt.app.Log("warn", fmt.Sprintf("上报事件到 %s 返回 %d: %s", target, resp.StatusCode, string(body)))
+				}
 			}(data)
 		}
 	}
@@ -569,7 +626,13 @@ func (rt *listenerRuntime) reverseWSOnce(target string) error {
 	for {
 		var raw json.RawMessage
 		if err := conn.ReadJSON(&raw); err != nil {
+			if rt.traceEnabled() {
+				rt.traceRaw("反向WS", "✕ 连接关闭", err.Error())
+			}
 			return err
+		}
+		if rt.traceEnabled() {
+			rt.traceRaw("反向WS", "← 收到帧", string(raw))
 		}
 		var act onebot.Action
 		if err := json.Unmarshal(raw, &act); err != nil {
@@ -577,7 +640,11 @@ func (rt *listenerRuntime) reverseWSOnce(target string) error {
 			rt.writeWS(conn, resp)
 			continue
 		}
+		rt.traceReceive("反向WS", act.Action, act, act.Echo)
+		start := time.Now()
 		resp := rt.app.HandleAction(rt.bot.SelfNum(), act)
+		rt.traceReply("反向WS", act.Action, resp)
+		rt.app.Log("debug", fmt.Sprintf("反向WS 动作 %s 耗时=%s", act.Action, time.Since(start).String()))
 		out, _ := json.Marshal(resp)
 		rt.writeWS(conn, out)
 	}

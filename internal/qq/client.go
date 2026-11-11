@@ -261,22 +261,38 @@ type UploadResult struct {
 	ID       string `json:"id"`
 }
 
-// UploadGroupMedia registers a remote URL as media for later sending in a group.
-// fileType: 1 image, 2 video, 3 voice, 4 file.
-func (c *Client) UploadGroupMedia(ctx context.Context, groupOpenID string, fileType int, remoteURL string) (*UploadResult, error) {
-	body := map[string]any{"file_type": fileType, "url": remoteURL, "srv_send_msg": false}
+// MediaUpload describes media to register before sending.
+type MediaUpload struct {
+	FileType int    // 1 image, 2 video, 3 voice, 4 file
+	URL      string // remote url; the platform downloads it
+	Data     string // base64 payload for direct upload (<=5MB), wins over URL
+	Name     string // file name, required for direct uploads
+}
+
+func (m MediaUpload) Body() map[string]any {
+	b := map[string]any{"file_type": m.FileType, "srv_send_msg": false}
+	if m.Data != "" {
+		b["file_data"] = m.Data
+		b["file_name"] = m.Name
+	} else {
+		b["url"] = m.URL
+	}
+	return b
+}
+
+// UploadGroupMedia registers media for later sending in a group.
+func (c *Client) UploadGroupMedia(ctx context.Context, groupOpenID string, m MediaUpload) (*UploadResult, error) {
 	var out UploadResult
-	if err := c.Do(ctx, http.MethodPost, "/v2/groups/"+url.PathEscape(groupOpenID)+"/files", body, &out); err != nil {
+	if err := c.Do(ctx, http.MethodPost, "/v2/groups/"+url.PathEscape(groupOpenID)+"/files", m.Body(), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
 }
 
-// UploadC2CMedia registers a remote URL as media for later sending in a C2C chat.
-func (c *Client) UploadC2CMedia(ctx context.Context, userOpenID string, fileType int, remoteURL string) (*UploadResult, error) {
-	body := map[string]any{"file_type": fileType, "url": remoteURL, "srv_send_msg": false}
+// UploadC2CMedia registers media for later sending in a C2C chat.
+func (c *Client) UploadC2CMedia(ctx context.Context, userOpenID string, m MediaUpload) (*UploadResult, error) {
 	var out UploadResult
-	if err := c.Do(ctx, http.MethodPost, "/v2/users/"+url.PathEscape(userOpenID)+"/files", body, &out); err != nil {
+	if err := c.Do(ctx, http.MethodPost, "/v2/users/"+url.PathEscape(userOpenID)+"/files", m.Body(), &out); err != nil {
 		return nil, err
 	}
 	return &out, nil

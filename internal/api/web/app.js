@@ -273,6 +273,7 @@ function renderListeners() {
             <strong>${esc(l.name || TYPE_LABEL[l.type])}</strong>
             <span class="tag sig">${esc(TYPE_LABEL[l.type] || l.type)}</span>
             ${l.token ? '<span class="tag">token</span>' : '<span class="tag warn">无 token</span>'}
+            ${l.debug_log ? '<span class="tag sig">调试日志</span>' : ''}
             ${l.enabled ? '' : '<span class="tag">已停用</span>'}
           </div>
           <div class="row-meta">${esc(botName)} · ${target}${extra}</div>
@@ -620,7 +621,10 @@ function listenerFormHTML(l) {
       <input name="url" value="${esc(l.url || '')}" placeholder=""></label>
     <label class="field"><span>Token（可选，用于鉴权）</span>
       <input name="token" value="${esc(l.token || '')}" placeholder="留空则不校验"></label>
-    <label class="check"><input type="checkbox" name="enabled" ${l.enabled !== false ? 'checked' : ''}><span>启用此监听</span></label>
+    <div class="grid-2">
+      <label class="check"><input type="checkbox" name="enabled" ${l.enabled !== false ? 'checked' : ''}><span>启用此监听</span></label>
+      <label class="check"><input type="checkbox" name="debug_log" ${l.debug_log ? 'checked' : ''}><span>打印收发调试日志</span></label>
+    </div>
     <p class="field-hint" id="lf-hint"></p>
   `;
 }
@@ -652,6 +656,7 @@ function readListenerForm(form) {
     url: (data.get('url') || '').trim(),
     post_url: '',
     token: data.get('token') || '',
+    debug_log: data.get('debug_log') === 'on',
     enabled: data.get('enabled') === 'on',
   };
 }

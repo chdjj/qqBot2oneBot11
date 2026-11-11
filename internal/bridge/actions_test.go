@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"qqbotonebot/internal/onebot"
+	"qqbotonebot/internal/qq"
 )
 
 func TestSegmentsToQQText(t *testing.T) {
@@ -125,5 +126,89 @@ func TestMessageIDStable(t *testing.T) {
 	}
 	if messageIDFromSeq("EVT-1", "ROBOT1.0_x") <= 0 {
 		t.Fatal("hashed id must be positive")
+	}
+}
+
+func TestExtractBase64Forms(t *testing.T) {
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAAMBAQAY3Y2wAAAAAElFTkSuQmCC"
+
+	cases := []struct {
+		name string
+		data map[string]any
+		file string
+		url  string
+		ok   bool
+	}{
+		{"base64 scheme", map[string]any{}, "base64://" + png, "", true},
+		{"data uri", map[string]any{}, "data:image/png;base64," + png, "", true},
+		{"bare payload", map[string]any{}, png, "", true},
+		{"http url is not base64", map[string]any{}, "", "https://example.com/a.png", false},
+		{"filename is not base64", map[string]any{}, "a.png", "", false},
+		{"empty", map[string]any{}, "", "", false},
+	}
+	for _, c := range cases {
+		name, payload, ok, err := extractBase64(c.data, c.file, c.url)
+		if err != nil {
+			t.Fatalf("%s: unexpected error %v", c.name, err)
+		}
+		if ok != c.ok {
+			t.Fatalf("%s: ok=%v want %v", c.name, ok, c.ok)
+		}
+		if ok {
+			if payload == "" {
+				t.Fatalf("%s: empty payload", c.name)
+			}
+		} else if name != "" || payload != "" {
+			t.Fatalf("%s: should return zeros when not base64", c.name)
+		}
+	}
+}
+
+func TestExtractBase64InvalidPayload(t *testing.T) {
+	// Explicitly marked base64 but undecodable: must be an error, not a silent
+	// fallback to URL upload.
+	_, _, ok, err := extractBase64(map[string]any{}, "base64://!!!notbase64!!!", "")
+	if err == nil {
+		t.Fatal("expected an error for invalid base64:// payload")
+	}
+	if ok {
+		t.Fatal("should not report ok")
+	}
+}
+
+func TestSegmentsToQQBase64Media(t *testing.T) {
+	const png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAAMBAQAY3Y2wAAAAAElFTkSuQmCC"
+	msg, err := segmentsToQQMessage("group", []onebot.Segment{
+		{Type: "reply", Data: map[string]any{"id": "123"}},
+		{Type: "image", Data: map[string]any{"file": "base64://" + png}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.msg.MsgType != 7 {
+		t.Fatalf("msg_type = %d", msg.msg.MsgType)
+	}
+	if msg.mediaData == "" {
+		t.Fatal("mediaData lost — base64 would be resent as a URL upload")
+	}
+	if msg.mediaURL != "" {
+		t.Fatalf("mediaURL should be empty, got %q", msg.mediaURL)
+	}
+	if msg.mediaName == "" || !strings.HasSuffix(msg.mediaName, ".png") {
+		t.Fatalf("mediaName = %q", msg.mediaName)
+	}
+	if msg.mediaFileType != 1 {
+		t.Fatalf("file type = %d", msg.mediaFileType)
+	}
+}
+
+func TestMediaUploadBody(t *testing.T) {
+	direct := qq.MediaUpload{FileType: 1, Data: "AAAA", Name: "a.png"}
+	if b := direct.Body(); b["file_data"] != "AAAA" || b["url"] != nil {
+		t.Fatalf("direct upload body = %v", b)
+	}
+	remote := qq.MediaUpload{FileType: 1, URL: "https://x/a.png"}
+	if b := remote.Body(); b["url"] != "https://x/a.png" || b["file_data"] != nil {
+		t.Fatalf("url upload body = %v", b)
 	}
 }

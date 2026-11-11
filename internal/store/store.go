@@ -38,18 +38,20 @@ const (
 )
 
 type Listener struct {
-	ID        int64  `json:"id"`
-	BotID     int64  `json:"bot_id"`
-	Name      string `json:"name"`
-	Type      string `json:"type"`
-	Host      string `json:"host"`
-	Port      int    `json:"port"`
-	Path      string `json:"path"`
-	URL       string `json:"url"`
-	PostURL   string `json:"post_url"`
-	Token     string `json:"token"`
-	Enabled   bool   `json:"enabled"`
-	CreatedAt int64  `json:"created_at"`
+	ID      int64  `json:"id"`
+	BotID   int64  `json:"bot_id"`
+	Name    string `json:"name"`
+	Type    string `json:"type"`
+	Host    string `json:"host"`
+	Port    int    `json:"port"`
+	Path    string `json:"path"`
+	URL     string `json:"url"`
+	PostURL string `json:"post_url"`
+	Token   string `json:"token"`
+	Enabled bool   `json:"enabled"`
+	// DebugLog turns on verbose send/receive tracing for this listener.
+	DebugLog  bool  `json:"debug_log"`
+	CreatedAt int64 `json:"created_at"`
 }
 
 type Group struct {
@@ -107,6 +109,7 @@ func (s *Store) migrate() error {
 			post_url TEXT NOT NULL DEFAULT '',
 			token TEXT NOT NULL DEFAULT '',
 			enabled INTEGER NOT NULL DEFAULT 1,
+			debug_log INTEGER NOT NULL DEFAULT 0,
 			created_at INTEGER NOT NULL DEFAULT 0
 		)`,
 		`CREATE TABLE IF NOT EXISTS groups (
@@ -145,7 +148,42 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+	// ALTER-based migrations for databases created by older versions.
+	if err := s.addColumnIfMissing("listeners", "debug_log", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
 	return nil
+}
+
+// addColumnIfMissing runs an ALTER TABLE only when the column is absent, so
+// opening an existing database upgrades it in place.
+func (s *Store) addColumnIfMissing(table, column, decl string) error {
+	rows, err := s.db.Query("PRAGMA table_info(" + table + ")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	var (
+		cid     int
+		name    string
+		typ     string
+		notNull int
+		dflt    sql.NullString
+		pk      int
+	)
+	for rows.Next() {
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &dflt, &pk); err != nil {
+			return err
+		}
+		if name == column {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec("ALTER TABLE " + table + " ADD COLUMN " + column + " " + decl)
+	return err
 }
 
 func now() int64 { return time.Now().Unix() }
@@ -245,12 +283,12 @@ func (s *Store) DeleteBot(id int64) error {
 
 func scanListener(rows interface{ Scan(...any) error }) (Listener, error) {
 	var l Listener
-	err := rows.Scan(&l.ID, &l.BotID, &l.Name, &l.Type, &l.Host, &l.Port, &l.Path, &l.URL, &l.PostURL, &l.Token, &l.Enabled, &l.CreatedAt)
+	err := rows.Scan(&l.ID, &l.BotID, &l.Name, &l.Type, &l.Host, &l.Port, &l.Path, &l.URL, &l.PostURL, &l.Token, &l.Enabled, &l.DebugLog, &l.CreatedAt)
 	return l, err
 }
 
 func (s *Store) ListListeners() ([]Listener, error) {
-	rows, err := s.db.Query(`SELECT id, bot_id, name, type, host, port, path, url, post_url, token, enabled, created_at FROM listeners ORDER BY bot_id, id`)
+	rows, err := s.db.Query(`SELECT id, bot_id, name, type, host, port, path, url, post_url, token, enabled, debug_log, created_at FROM listeners ORDER BY bot_id, id`)
 	if err != nil {
 		return nil, err
 	}
@@ -267,7 +305,7 @@ func (s *Store) ListListeners() ([]Listener, error) {
 }
 
 func (s *Store) GetListener(id int64) (Listener, error) {
-	l, err := scanListener(s.db.QueryRow(`SELECT id, bot_id, name, type, host, port, path, url, post_url, token, enabled, created_at FROM listeners WHERE id=?`, id))
+	l, err := scanListener(s.db.QueryRow(`SELECT id, bot_id, name, type, host, port, path, url, post_url, token, enabled, debug_log, created_at FROM listeners WHERE id=?`, id))
 	if errors.Is(err, sql.ErrNoRows) {
 		return l, ErrNotFound
 	}
@@ -276,8 +314,8 @@ func (s *Store) GetListener(id int64) (Listener, error) {
 
 func (s *Store) CreateListener(l *Listener) error {
 	l.CreatedAt = now()
-	res, err := s.db.Exec(`INSERT INTO listeners(bot_id, name, type, host, port, path, url, post_url, token, enabled, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
-		l.BotID, l.Name, l.Type, l.Host, l.Port, l.Path, l.URL, l.PostURL, l.Token, l.Enabled, l.CreatedAt)
+	res, err := s.db.Exec(`INSERT INTO listeners(bot_id, name, type, host, port, path, url, post_url, token, enabled, debug_log, created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		l.BotID, l.Name, l.Type, l.Host, l.Port, l.Path, l.URL, l.PostURL, l.Token, l.Enabled, l.DebugLog, l.CreatedAt)
 	if err != nil {
 		return err
 	}
@@ -286,8 +324,8 @@ func (s *Store) CreateListener(l *Listener) error {
 }
 
 func (s *Store) UpdateListener(l *Listener) error {
-	res, err := s.db.Exec(`UPDATE listeners SET bot_id=?, name=?, type=?, host=?, port=?, path=?, url=?, post_url=?, token=?, enabled=? WHERE id=?`,
-		l.BotID, l.Name, l.Type, l.Host, l.Port, l.Path, l.URL, l.PostURL, l.Token, l.Enabled, l.ID)
+	res, err := s.db.Exec(`UPDATE listeners SET bot_id=?, name=?, type=?, host=?, port=?, path=?, url=?, post_url=?, token=?, enabled=?, debug_log=? WHERE id=?`,
+		l.BotID, l.Name, l.Type, l.Host, l.Port, l.Path, l.URL, l.PostURL, l.Token, l.Enabled, l.DebugLog, l.ID)
 	if err != nil {
 		return err
 	}

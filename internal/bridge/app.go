@@ -188,7 +188,7 @@ func (a *App) StartBot(id int64) error {
 		b.status = st
 		if st.SelfID != "" {
 			b.selfUsername = st.Username
-			if n, err := parseInt64(st.SelfID); err == nil {
+			if n, ok := selfIDToInt64(st.SelfID); ok {
 				b.selfNum = n
 			}
 			// Persist identity so the console shows it before a reconnect.
@@ -332,11 +332,39 @@ func (b *Bot) SelfNum() int64 {
 	if b.selfNum != 0 {
 		return b.selfNum
 	}
-	if n, err := parseInt64(b.rec.SelfID); err == nil && n > 0 {
+	if n, ok := selfIDToInt64(b.rec.SelfID); ok {
 		return n
 	}
 	// Stable fallback so clients that validate self_id still work.
 	return -(b.rec.ID + 100000)
+}
+
+// selfIDToInt64 maps a QQ account id onto an int64. Official bot ids are 20
+// digits and overflow int64 (max 9223372036854775807), so values that do not
+// fit are folded into range. The mapping is deterministic, so self_id stays
+// the same across restarts, which is what OneBot clients rely on.
+func selfIDToInt64(s string) (int64, bool) {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return 0, false
+	}
+	if n, err := parseInt64(s); err == nil && n > 0 {
+		return n, true
+	}
+	// Fold the decimal digits into the positive int64 range.
+	var acc uint64
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			// Not a numeric id at all; let the caller fall back.
+			return 0, false
+		}
+		acc = acc*10 + uint64(r-'0')
+	}
+	if acc == 0 {
+		return 0, false
+	}
+	const maxPositive = uint64(1) << 62
+	return int64(acc % maxPositive), true
 }
 
 func (b *Bot) Status() qq.Status {

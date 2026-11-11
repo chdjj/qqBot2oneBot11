@@ -7,7 +7,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'internal', 'api', 'web') + path.sep;
 
-const BASE = 'http://127.0.0.1:8080';
+const BASE = process.env.BASE || 'http://127.0.0.1:8080';
 let failures = 0;
 function check(name, ok, detail = '') {
   if (!ok) failures++;

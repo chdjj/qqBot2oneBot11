@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -150,10 +151,21 @@ func (a *App) dispatchMessage(ctx context.Context, b *Bot, echo any, kind, openI
 	if msg.msg.MsgType == 7 {
 		// Media must be registered first, which requires the network call.
 		var up *qq.UploadResult
+		upReq := qq.MediaUpload{
+			FileType: msg.mediaFileType,
+			URL:      msg.mediaURL,
+			Data:     msg.mediaData,
+			Name:     msg.mediaName,
+		}
+		if msg.mediaData != "" {
+			// base64 direct upload avoids the server-side download that fails
+			// for slow or China-unreachable image hosts.
+			a.Log("debug", fmt.Sprintf("媒体直传 base64，约 %d 字节", len(msg.mediaData)))
+		}
 		if kind == "group" {
-			up, err = b.client.UploadGroupMedia(ctx, openID, msg.mediaFileType, msg.mediaURL)
+			up, err = b.client.UploadGroupMedia(ctx, openID, upReq)
 		} else {
-			up, err = b.client.UploadC2CMedia(ctx, openID, msg.mediaFileType, msg.mediaURL)
+			up, err = b.client.UploadC2CMedia(ctx, openID, upReq)
 		}
 		if err != nil {
 			return onebot.Failed(echo, qqRetCode(err), "上传媒体失败: "+qqErrorMessage(err))
@@ -343,6 +355,120 @@ type qqConvertedMessage struct {
 	msg           qq.Message
 	mediaFileType int
 	mediaURL      string
+	// mediaData is base64 content for direct uploads (≤5MB); when set it takes
+	// precedence over mediaURL.
+	mediaData string
+	mediaName string
+}
+
+// maxInlineMediaBytes is the platform's limit for direct binary upload.
+const maxInlineMediaBytes = 5 << 20
+
+// extractBase64 recognises the base64 forms OneBot clients produce:
+//
+//	base64://<payload>                  (OneBot 11 convention)
+//	data:image/png;base64,<payload>     (data URI)
+//	<bare base64 in file>               when no url/http file is present
+//
+// It returns ok=false when the segment is not base64 at all. An error means the
+// caller clearly meant base64 but the data is invalid or too large.
+func extractBase64(data map[string]any, file, url string) (name, payload string, ok bool, err error) {
+	raw := strings.TrimSpace(file)
+	if u := strings.TrimSpace(url); raw == "" && u != "" {
+		raw = u
+	}
+	if raw == "" {
+		return "", "", false, nil
+	}
+
+	prefix := ""
+	switch {
+	case strings.HasPrefix(raw, "base64://"):
+		payload = strings.TrimPrefix(raw, "base64://")
+		prefix = "base64://"
+	case strings.HasPrefix(raw, "data:") && strings.Contains(raw, ";base64,"):
+		payload = raw[strings.Index(raw, ";base64,")+len(";base64,"):]
+		prefix = "data-uri"
+	case strings.HasPrefix(raw, "http://"), strings.HasPrefix(raw, "https://"):
+		return "", "", false, nil
+	default:
+		// A bare string only counts as base64 if it decodes and looks like a
+		// payload; otherwise it is a filename and must not be guessed at.
+		if !looksLikeBase64(raw) {
+			return "", "", false, nil
+		}
+		payload = raw
+		prefix = "bare"
+	}
+
+	payload = strings.TrimSpace(payload)
+	decoded, decErr := base64.StdEncoding.DecodeString(payload)
+	if decErr != nil {
+		// Tolerate unpadded / URL-safe variants.
+		if d2, e2 := base64.RawStdEncoding.DecodeString(payload); e2 == nil {
+			decoded, decErr = d2, nil
+		} else if d3, e3 := base64.RawURLEncoding.DecodeString(payload); e3 == nil {
+			decoded, decErr = d3, nil
+		}
+	}
+	if decErr != nil {
+		if prefix == "bare" {
+			// A normal filename that happens to use base64-ish characters.
+			return "", "", false, nil
+		}
+		return "", "", false, fmt.Errorf("base64 数据解码失败: %w", decErr)
+	}
+	if len(decoded) > maxInlineMediaBytes {
+		return "", "", false, fmt.Errorf("base64 数据 %d 字节，超过 QQ 直传上限 5MB，请改用可访问的 url",
+			len(decoded))
+	}
+	// Re-encode to canonical form so QQ receives a clean payload.
+	return mediaFileName(data, decoded), base64.StdEncoding.EncodeToString(decoded), true, nil
+}
+
+// looksLikeBase64 is a cheap guard: filenames such as "a.png" must not be
+// treated as payloads, so require a base64 character set and a plausible length.
+func looksLikeBase64(s string) bool {
+	if len(s) < 16 || len(s)%4 != 0 {
+		return false
+	}
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/="
+	for _, r := range s {
+		if !strings.ContainsRune(alphabet, r) {
+			return false
+		}
+	}
+	return true
+}
+
+// mediaFileName derives a plausible name, mostly so QQ's file_type detection
+// has a hint. The platform sniffs content, so the extension is advisory.
+func mediaFileName(data map[string]any, decoded []byte) string {
+	if n := onebot.StrParam(data, "name"); n != "" {
+		return n
+	}
+	if f := onebot.StrParam(data, "file"); f != "" && !strings.HasPrefix(f, "base64://") &&
+		!strings.HasPrefix(f, "data:") && looksLikeBase64(f) == false {
+		return f
+	}
+	return "media" + sniffExt(decoded)
+}
+
+// sniffExt guesses an extension from the magic bytes we care about.
+func sniffExt(b []byte) string {
+	switch {
+	case len(b) > 8 && b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G':
+		return ".png"
+	case len(b) > 3 && b[0] == 0xFF && b[1] == 0xD8:
+		return ".jpg"
+	case len(b) > 6 && b[0] == 'G' && b[1] == 'I' && b[2] == 'F':
+		return ".gif"
+	case len(b) > 4 && b[0] == 'R' && b[1] == 'I' && b[2] == 'F' && b[3] == 'F':
+		return ".wav"
+	case len(b) > 3 && b[0] == 0x1A && b[1] == 0x45 && b[2] == 0xDF && b[3] == 0xA3:
+		return ".webm"
+	}
+	return ""
 }
 
 // segmentsToQQMessage maps OneBot segments onto a QQ v2 message payload.
@@ -373,9 +499,6 @@ func segmentsToQQMessage(kind string, segs []onebot.Segment) (qqConvertedMessage
 			if url == "" && strings.HasPrefix(file, "http") {
 				url = file
 			}
-			if url == "" {
-				return qqConvertedMessage{}, errors.New("QQ 官方机器人发送媒体需要提供可访问的 url")
-			}
 			ft := 1
 			switch seg.Type {
 			case "record":
@@ -384,6 +507,23 @@ func segmentsToQQMessage(kind string, segs []onebot.Segment) (qqConvertedMessage
 				ft = 2
 			case "file":
 				ft = 4
+			}
+			// OneBot plugins frequently hand us inline base64, either as
+			// base64://<data>, a bare data: URI, or the raw payload in "file"
+			// with no scheme. QQ accepts it directly (≤5MB), which also avoids
+			// the server-side download failures URL uploads suffer from.
+			if name, data, ok, err := extractBase64(seg.Data, file, url); err != nil {
+				return qqConvertedMessage{}, err
+			} else if ok {
+				media = &qqConvertedMessage{
+					mediaFileType: ft,
+					mediaData:     data,
+					mediaName:     name,
+				}
+				continue
+			}
+			if url == "" {
+				return qqConvertedMessage{}, errors.New("发送媒体需要提供可访问的 url，或 base64 数据")
 			}
 			media = &qqConvertedMessage{mediaFileType: ft, mediaURL: url}
 		case "reply":
@@ -414,7 +554,10 @@ func segmentsToQQMessage(kind string, segs []onebot.Segment) (qqConvertedMessage
 		}
 		return qqConvertedMessage{
 			msg:           qq.Message{MsgType: 7, Content: content},
-			mediaFileType: media.mediaFileType, mediaURL: media.mediaURL,
+			mediaFileType: media.mediaFileType,
+			mediaURL:      media.mediaURL,
+			mediaData:     media.mediaData,
+			mediaName:     media.mediaName,
 		}, nil
 	}
 	if content == "" {

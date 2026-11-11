@@ -20,3 +20,4 @@
 
 # CI 测试依赖（package-lock.json 需要提交以锁定版本）
 /hack/node_modules/
+*.exe~

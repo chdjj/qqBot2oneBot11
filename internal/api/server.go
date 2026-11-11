@@ -377,16 +377,17 @@ func (s *Server) runtimeStatus(id int64) qq.Status {
 // ---- listeners ----
 
 type listenerRequest struct {
-	BotID   int64  `json:"bot_id"`
-	Name    string `json:"name"`
-	Type    string `json:"type"`
-	Host    string `json:"host"`
-	Port    int    `json:"port"`
-	Path    string `json:"path"`
-	URL     string `json:"url"`
-	PostURL string `json:"post_url"`
-	Token   string `json:"token"`
-	Enabled bool   `json:"enabled"`
+	BotID    int64  `json:"bot_id"`
+	Name     string `json:"name"`
+	Type     string `json:"type"`
+	Host     string `json:"host"`
+	Port     int    `json:"port"`
+	Path     string `json:"path"`
+	URL      string `json:"url"`
+	PostURL  string `json:"post_url"`
+	Token    string `json:"token"`
+	Enabled  bool   `json:"enabled"`
+	DebugLog bool   `json:"debug_log"`
 }
 
 func (s *Server) validateListener(l *store.Listener) error {
@@ -433,7 +434,7 @@ func (s *Server) listeners(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, http.StatusBadRequest, "请求格式错误: "+err.Error())
 			return
 		}
-		l := store.Listener{BotID: req.BotID, Name: req.Name, Type: req.Type, Host: req.Host, Port: req.Port, Path: req.Path, URL: req.URL, PostURL: req.PostURL, Token: req.Token, Enabled: req.Enabled}
+		l := store.Listener{BotID: req.BotID, Name: req.Name, Type: req.Type, Host: req.Host, Port: req.Port, Path: req.Path, URL: req.URL, PostURL: req.PostURL, Token: req.Token, Enabled: req.Enabled, DebugLog: req.DebugLog}
 		if l.Type == store.ListenerHTTPClient || l.Type == store.ListenerWSClient {
 			if l.URL == "" && l.PostURL != "" {
 				l.URL = l.PostURL
@@ -475,8 +476,8 @@ func (s *Server) listenerByID(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		oldBot := l.BotID
-		l.BotID, l.Name, l.Type, l.Host, l.Port, l.Path, l.URL, l.PostURL, l.Token, l.Enabled =
-			req.BotID, req.Name, req.Type, req.Host, req.Port, req.Path, req.URL, req.PostURL, req.Token, req.Enabled
+		l.BotID, l.Name, l.Type, l.Host, l.Port, l.Path, l.URL, l.PostURL, l.Token, l.Enabled, l.DebugLog =
+			req.BotID, req.Name, req.Type, req.Host, req.Port, req.Path, req.URL, req.PostURL, req.Token, req.Enabled, req.DebugLog
 		if err := s.validateListener(&l); err != nil {
 			writeErr(w, http.StatusBadRequest, err.Error())
 			return
