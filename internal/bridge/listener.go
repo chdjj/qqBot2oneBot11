@@ -213,10 +213,47 @@ func (rt *listenerRuntime) authorized(r *http.Request) bool {
 	return false
 }
 
-func (rt *listenerRuntime) unauthorized(w http.ResponseWriter) {
+// unauthorized always logs, even without the debug switch: a rejected request
+// is exactly what someone is looking for when their client "gets no response".
+func (rt *listenerRuntime) unauthorized(w http.ResponseWriter, r *http.Request) {
+	presented := r.Header.Get("Authorization")
+	if presented == "" {
+		presented = r.Header.Get("X-Admin-Token")
+	}
+	if presented == "" && r.URL.Query().Get("access_token") != "" {
+		presented = "?access_token=" + r.URL.Query().Get("access_token")
+	}
+	hint := "(未携带 token)"
+	if presented != "" {
+		hint = "携带了 " + redactToken(strings.TrimPrefix(strings.TrimPrefix(presented, "Bearer "), "Token "))
+	}
+	rt.app.Log("warn", fmt.Sprintf(
+		"[%s/#%d %s] ✕ 拒绝未授权请求 %s %s ← %s，期望的 token 是 %s",
+		rt.cfg.Name, rt.cfg.ID, transportName(rt.cfg.Type), r.Method, r.URL.Path,
+		hint, redactToken(rt.cfg.Token)))
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusUnauthorized)
+	// Answer with HTTP 200 and retcode 403, matching go-cqhttp and most OneBot
+	// implementations. Clients that discard the body of a non-2xx response
+	// would otherwise report "result is null" instead of the real error.
+	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(onebot.Failed(nil, 403, "token 验证失败"))
+}
+
+// transportName renders a listener type for logs.
+func transportName(t string) string {
+	switch t {
+	case store.ListenerHTTPServer:
+		return "HTTP"
+	case store.ListenerHTTPSSE:
+		return "SSE"
+	case store.ListenerWSServer:
+		return "WS"
+	case store.ListenerWSClient:
+		return "反向WS"
+	case store.ListenerHTTPClient:
+		return "HTTP上报"
+	}
+	return t
 }
 
 // ---- HTTP server & SSE ----
@@ -225,7 +262,7 @@ func (rt *listenerRuntime) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
 	w.Header().Set("Content-Type", "application/json")
 	if !rt.authorized(r) {
-		rt.unauthorized(w)
+		rt.unauthorized(w, r)
 		return
 	}
 	switch r.Method {
@@ -299,7 +336,7 @@ func (rt *listenerRuntime) handleHTTPEvents(w http.ResponseWriter, r *http.Reque
 // handleSSE streams events as text/event-stream.
 func (rt *listenerRuntime) handleSSE(w http.ResponseWriter, r *http.Request) {
 	if !rt.authorized(r) {
-		rt.unauthorized(w)
+		rt.unauthorized(w, r)
 		return
 	}
 	fl, ok := w.(http.Flusher)
@@ -429,7 +466,7 @@ func (rt *listenerRuntime) writeWS(c *websocket.Conn, data []byte) {
 
 func (rt *listenerRuntime) handleWSServer(w http.ResponseWriter, r *http.Request, up *websocket.Upgrader) {
 	if !rt.authorized(r) {
-		rt.unauthorized(w)
+		rt.unauthorized(w, r)
 		return
 	}
 	conn, err := up.Upgrade(w, r, nil)

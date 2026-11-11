@@ -43,7 +43,12 @@ async function main() {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ action: 'get_login_info', echo: 1 }),
   });
-  check('HTTP 拒绝无 token 请求', noAuth.status === 401, `status=${noAuth.status}`);
+  const noAuthBody = await noAuth.json().catch(() => null);
+  // OneBot implementations answer HTTP 200 with retcode 403 so clients that
+  // drop non-2xx bodies still see the error.
+  check('HTTP 拒绝无 token 请求',
+    noAuth.status === 200 && noAuthBody && noAuthBody.retcode === 403,
+    `status=${noAuth.status} body=${JSON.stringify(noAuthBody)}`);
 
   const withAuth = await fetch('http://127.0.0.1:8081/', {
     method: 'POST',
