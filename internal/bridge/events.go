@@ -12,45 +12,37 @@ import (
 )
 
 // contentToSegments turns QQ's plain "content" string into OneBot segments,
-// recognising the inline <qqbot-at-...> / <emoji> markers the platform may emit.
+// recognising the inline <qqbot-at-...> mention markers the platform may emit.
+// Any other '<' is ordinary text.
 func contentToSegments(content string) []onebot.Segment {
 	if content == "" {
 		return nil
 	}
 	var segs []onebot.Segment
+	flushText := func(s string) {
+		if s != "" {
+			segs = append(segs, onebot.Text(s))
+		}
+	}
 	for len(content) > 0 {
-		start := strings.Index(content, "<")
-		if start < 0 {
-			segs = append(segs, onebot.Text(content))
+		idx := strings.Index(content, "<qqbot-at-")
+		if idx < 0 {
+			flushText(content)
 			break
 		}
-		// Find the matching marker; ignore a stray '<' that is not a tag.
-		at := strings.Index(content[start:], ">")
-		endMark := strings.Index(content, "<qqbot-at-")
-		if endMark < 0 || endMark < start {
-			if start > 0 {
-				segs = append(segs, onebot.Text(content[:start]))
-			}
-			segs = append(segs, onebot.Text(content[start:]))
+		flushText(content[:idx])
+		rest := content[idx+len("<qqbot-at-"):]
+		end := strings.Index(rest, ">")
+		if end < 0 {
+			// Unterminated marker: keep it as literal text.
+			flushText(content[idx:])
 			break
 		}
-		if start > 0 {
-			segs = append(segs, onebot.Text(content[:start]))
-		}
-		_ = at
-		closeAt := strings.Index(content[start:], ">")
-		if closeAt < 0 {
-			segs = append(segs, onebot.Text(content[start:]))
-			break
-		}
-		marker := content[start : start+closeAt+1]
-		if body, ok := strings.CutPrefix(marker, "<qqbot-at-"); ok {
-			id := strings.TrimSuffix(body, ">")
+		id := strings.TrimSpace(rest[:end])
+		if id != "" {
 			segs = append(segs, onebot.At(id))
-		} else {
-			segs = append(segs, onebot.Text(marker))
 		}
-		content = content[start+closeAt+1:]
+		content = rest[end+1:]
 	}
 	return segs
 }
