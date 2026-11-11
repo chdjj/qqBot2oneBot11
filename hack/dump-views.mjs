@@ -2,15 +2,18 @@
 import { JSDOM } from 'jsdom';
 import fs from 'node:fs';
 import vm from 'node:vm';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+const WEB = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'internal', 'api', 'web') + path.sep;
 
 const BASE = process.env.BASE || 'http://127.0.0.1:8080';
-const html = fs.readFileSync('E:/qqbottoonebot/internal/api/web/index.html', 'utf8');
+const html = fs.readFileSync(WEB + 'index.html', 'utf8');
 const dom = new JSDOM(html.replace('/static/app.js', ''), { url: BASE + '/', runScripts: 'outside-only', pretendToBeVisual: true });
 const w = dom.window;
 w.fetch = (i, o) => fetch(String(i).startsWith('http') ? i : BASE + i, o);
 w.WebSocket = class { constructor() { setTimeout(() => this.onopen && this.onopen(), 5); } close() {} };
 w.confirm = () => true;
-vm.runInContext(fs.readFileSync('E:/qqbottoonebot/internal/api/web/app.js', 'utf8'), dom.getInternalVMContext(), { filename: 'app.js' });
+vm.runInContext(fs.readFileSync(WEB + 'app.js', 'utf8'), dom.getInternalVMContext(), { filename: 'app.js' });
 await new Promise(r => setTimeout(r, 1400));
 
 const $ = (s) => w.document.querySelector(s);

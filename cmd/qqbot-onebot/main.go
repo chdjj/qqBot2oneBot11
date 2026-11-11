@@ -20,16 +20,23 @@ import (
 
 	"qqbotonebot/internal/api"
 	"qqbotonebot/internal/bridge"
+	"qqbotonebot/internal/buildinfo"
 	"qqbotonebot/internal/store"
 )
 
 func main() {
 	var (
-		addr   = flag.String("addr", "127.0.0.1:8080", "控制台监听地址")
-		dbPath = flag.String("db", "", "SQLite 数据库文件路径（默认 ./data/qqbot-onebot.db）")
-		debug  = flag.Bool("debug", false, "输出调试日志")
+		addr    = flag.String("addr", "127.0.0.1:8080", "控制台监听地址")
+		dbPath  = flag.String("db", "", "SQLite 数据库文件路径（默认 ./data/qqbot-onebot.db）")
+		debug   = flag.Bool("debug", false, "输出调试日志")
+		version = flag.Bool("version", false, "打印版本号后退出")
 	)
 	flag.Parse()
+
+	if *version {
+		fmt.Println(buildinfo.String())
+		return
+	}
 
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: map[bool]slog.Level{true: slog.LevelDebug, false: slog.LevelInfo}[*debug]})))
 
@@ -48,6 +55,7 @@ func main() {
 	defer st.Close()
 
 	app := bridge.NewApp(st)
+	app.SetBuildVersion(buildinfo.String())
 	app.StartAll()
 	defer app.StopAll()
 
@@ -58,7 +66,7 @@ func main() {
 	}
 
 	go func() {
-		app.Log("info", fmt.Sprintf("控制台已启动: http://%s", *addr))
+		app.Log("info", fmt.Sprintf("控制台已启动: http://%s（版本 %s）", *addr, buildinfo.String()))
 		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fatal("控制台启动失败: " + err.Error())
 		}

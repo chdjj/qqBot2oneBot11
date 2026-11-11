@@ -1,0 +1,13 @@
+{
+  "name": "qqbot-onebot-hack",
+  "private": true,
+  "description": "集成测试与界面测试脚本（不随二进制发布）",
+  "scripts": {
+    "test:transports": "node node-test.mjs",
+    "test:ui": "node ui-test.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "31.0.0",
+    "ws": "8.22.2"
+  }
+}

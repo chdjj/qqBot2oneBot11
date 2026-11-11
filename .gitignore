@@ -6,9 +6,15 @@
 *.db-shm
 *.db-wal
 
+# CI 产物中间目录（根目录的 qqbot-onebot-* 是有意提交的，不要忽略）
+/dist/
+
 # 编辑器
 .idea/
 .vscode/
 
 # 预览配置（本机调试用）
 /.claude/launch.json
+
+# CI 测试依赖（package-lock.json 需要提交以锁定版本）
+/hack/node_modules/

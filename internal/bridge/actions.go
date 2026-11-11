@@ -59,7 +59,7 @@ func (a *App) HandleAction(selfID int64, act onebot.Action) onebot.APIResponse {
 			"connected_at": st.ConnectedAt,
 		})
 	case "get_version_info":
-		return onebot.OK(act.Echo, map[string]any{"app_name": "qqbot-onebot", "app_version": "1.0.0", "protocol": "qqbot-v2"})
+		return onebot.OK(act.Echo, map[string]any{"app_name": "qqbot-onebot", "app_version": buildVersion, "protocol": "qqbot-v2"})
 	case "get_group_info":
 		return a.groupInfo(ctx, b, act.Echo, p)
 	case "get_group_list":

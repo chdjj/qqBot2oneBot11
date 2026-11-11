@@ -168,6 +168,41 @@ node hack/ui-test.mjs
 
 `QQBOT_API_BASE` / `QQBOT_TOKEN_URL` / `QQBOT_TEST_INJECT` 仅供测试：生产环境不要设置。`/api/__test/inject` 只在 `QQBOT_TEST_INJECT=1` 时注册。
 
+## 持续集成
+
+`.github/workflows/build.yml` 在推送到 `main`、提 PR、打 tag 或手动触发时运行四个作业：
+
+| 作业 | 内容 |
+| --- | --- |
+| 检查与测试 | `gofmt` 校验、`go vet`、`go test` |
+| 集成测试 | 启动模拟上游 + 真实适配器，跑 `hack/node-test.mjs`（10 项传输断言）与 `hack/ui-test.mjs` |
+| 编译 | 交叉编译 7 个目标（Windows/Linux/macOS × amd64/arm64，另加 linux/386），关闭 CGO |
+| 提交编译产物 | 仅在推送到 `main` 时，把二进制提交回仓库 |
+
+推送 `main` 后，作业会把编译好的程序提交到仓库根目录：
+
+```
+qqbot-onebot-windows-amd64.exe
+qqbot-onebot-windows-arm64.exe
+qqbot-onebot-linux-amd64
+qqbot-onebot-linux-arm64
+qqbot-onebot-linux-386
+qqbot-onebot-darwin-amd64
+qqbot-onebot-darwin-arm64
+SHA256SUMS.txt
+```
+
+版本号在编译时注入（`-version` 与 `get_version_info` 都返回它）：tag 构建用 tag 名，其余用分支名 + 提交短哈希 + 日期。二进制由 `GITHUB_TOKEN` 提交，这类提交**不会**再次触发工作流，因此不会循环。
+
+打形如 `v1.0.0` 的 tag 时，同一批二进制还会附到 GitHub Release。
+
+**启用前需要在仓库设置里做两件事**，否则「提交编译产物」作业会因权限不足失败：
+
+1. **Settings → Actions → General → Workflow permissions** 选择 **Read and write permissions**（否则 `GITHUB_TOKEN` 无法推送）。
+2. **Settings → Actions → General → Allow GitHub Actions to create and approve pull requests** 无需开启（本流程不建 PR），但如果组织策略开启了「Fork PR 需审批」，来自 fork 的 PR 只会跑检查与编译，不会提交产物（`publish` 作业限定了 `push` 到分支才运行）。
+
+若不想把二进制放进仓库，把 `publish` 作业整段删除即可，其余作业不受影响；下载产物请到对应运行页面的 Artifacts。
+
 ## 已知限制
 
 - 无 WebHook 回调接入（只实现 WebSocket 网关）。

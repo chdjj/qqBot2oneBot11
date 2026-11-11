@@ -16,6 +16,9 @@ import (
 	"qqbotonebot/internal/store"
 )
 
+// buildVersion is reported by get_version_info; overridable in tests.
+var buildVersion = "dev"
+
 func parseInt64(s string) (int64, error) {
 	return strconv.ParseInt(strings.TrimSpace(s), 10, 64)
 }
@@ -108,6 +111,13 @@ func (a *App) lockFor(id int64) *sync.Mutex {
 		a.startLocks[id] = l
 	}
 	return l
+}
+
+// SetBuildVersion records the compiled version for version reporting.
+func (a *App) SetBuildVersion(v string) {
+	if strings.TrimSpace(v) != "" {
+		buildVersion = v
+	}
 }
 
 func (a *App) Store() *store.Store { return a.st }
