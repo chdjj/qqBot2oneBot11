@@ -258,11 +258,7 @@ func (a *App) dispatchMessage(ctx context.Context, b *Bot, echo any, kind, openI
 				msg.msg.MsgSeq = &n
 			}
 		}
-		if kind == "group" {
-			res, lastErr = b.client.SendGroup(ctx, openID, &msg.msg)
-		} else {
-			res, lastErr = b.client.SendC2C(ctx, openID, &msg.msg)
-		}
+		res, lastErr = a.sendWithRetry(ctx, b, kind, openID, &msg.msg, fmt.Sprintf("第 %d/%d 段", i+1, len(chunks)))
 		if lastErr != nil {
 			break
 		}
@@ -282,11 +278,7 @@ func (a *App) dispatchMessage(ctx context.Context, b *Bot, echo any, kind, openI
 			}
 			a.Log("warn", fmt.Sprintf("群 @全体成员 发送失败（%s），已去掉标签重发", qqErrorMessage(lastErr)))
 			msg.msg.Content = stripped
-			if kind == "group" {
-				res, lastErr = b.client.SendGroup(ctx, openID, &msg.msg)
-			} else {
-				res, lastErr = b.client.SendC2C(ctx, openID, &msg.msg)
-			}
+			res, lastErr = a.sendWithRetry(ctx, b, kind, openID, &msg.msg, "去掉 @全体成员 后")
 			if lastErr == nil {
 				a.Log("info", "已去掉 @全体成员 重发成功")
 			}
@@ -348,7 +340,11 @@ func splitText(s string, limit int) []string {
 
 // SendTestGroup sends an active (non-reply) message for the console's test
 // button, so delivery works even when no recent inbound message exists.
-func (b *Bot) SendTestGroup(ctx context.Context, openID, content string, markdown bool) (*qq.SendResult, error) {
+func (a *App) SendTestGroup(ctx context.Context, botID int64, openID, content string, markdown bool) (*qq.SendResult, error) {
+	b := a.Bot(botID)
+	if b == nil {
+		return nil, errors.New("机器人未运行")
+	}
 	m := &qq.Message{MsgType: 0, Content: content}
 	if markdown {
 		m.Content = ""
@@ -357,7 +353,7 @@ func (b *Bot) SendTestGroup(ctx context.Context, openID, content string, markdow
 			"content": content,
 		}
 	}
-	return b.client.SendGroup(ctx, openID, m)
+	return a.sendWithRetry(ctx, b, "group", openID, m, "测试消息")
 }
 
 func previewSegments(segs []onebot.Segment) string {
@@ -781,4 +777,74 @@ func jpegName(name string) string {
 		return name[:idx] + ".jpg"
 	}
 	return name + ".jpg"
+}
+
+// sendWithRetry sends one message and retries once when the failure looks
+// transient (network error, timeout, 5xx, rate limit). Deterministic failures
+// such as failed content review or missing permissions are returned at once:
+// retrying them only wastes the passive-reply window.
+func (a *App) sendWithRetry(ctx context.Context, b *Bot, kind, openID string, msg *qq.Message, label string) (*qq.SendResult, error) {
+	send := func() (*qq.SendResult, error) {
+		if kind == "group" {
+			return b.client.SendGroup(ctx, openID, msg)
+		}
+		return b.client.SendC2C(ctx, openID, msg)
+	}
+
+	res, err := send()
+	if err == nil || !isRetryableSendError(err) {
+		return res, err
+	}
+	a.Log("warn", fmt.Sprintf("%s 发送失败（%s），重试一次", label, qqErrorMessage(err)))
+
+	// A short pause keeps an immediate retry from hitting the same throttle.
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-time.After(800 * time.Millisecond):
+	}
+	res2, err2 := send()
+	if err2 == nil {
+		a.Log("info", fmt.Sprintf("%s 重试成功", label))
+		return res2, nil
+	}
+	a.Log("warn", fmt.Sprintf("%s 重试仍失败: %s", label, qqErrorMessage(err2)))
+	return nil, err2
+}
+
+// isRetryableSendError distinguishes transient failures from permanent ones.
+func isRetryableSendError(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ae *qq.APIError
+	if !errors.As(err, &ae) {
+		// Transport-level errors (dial, reset, timeout) are worth one retry.
+		return true
+	}
+	code := ae.Code
+	if code == 0 {
+		code = ae.ErrCode
+	}
+	switch code {
+	case 40054005: // duplicate msg_seq: a fresh attempt can still be rejected, no point
+		return false
+	case 40034102, 40034105, 40034127, 40034143, 40034142, 40034144,
+		40054002, 40054003, 40054007, 850018, 850019, 850031,
+		11244, 11253, 304003, 304023, 40034101:
+		// Permission, quota, review, mute and size problems do not heal.
+		return false
+	case 40093001, 850027: // "请重试" / "稍后重试"
+		return true
+	}
+	// Server-side failures and throttling are retryable.
+	if ae.Status == 429 || ae.Status >= 500 {
+		return true
+	}
+	// Rate-limit style business codes.
+	switch code {
+	case 10000:
+		return false
+	}
+	return ae.Status >= 500
 }

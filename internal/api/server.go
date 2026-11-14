@@ -635,7 +635,7 @@ func (s *Server) testMessage(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	res, err := rt.SendTestGroup(ctx, openID, msg, req.Markdown)
+	res, err := s.app.SendTestGroup(ctx, req.BotID, openID, msg, req.Markdown)
 	if err != nil {
 		s.app.Log("error", "测试消息发送失败: "+err.Error())
 		writeErr(w, http.StatusBadGateway, err.Error())

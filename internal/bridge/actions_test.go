@@ -432,3 +432,41 @@ func TestJpegName(t *testing.T) {
 		}
 	}
 }
+
+func TestIsRetryableSendError(t *testing.T) {
+	// Transient: network failures, timeouts, 5xx, throttling, "请重试" codes.
+	retry := []error{
+		errors.New("dial tcp: connection reset"),
+		&qq.APIError{Status: 502, Code: 500},
+		&qq.APIError{Status: 429, Code: 0},
+		&qq.APIError{Status: 200, Code: 40093001},
+		&qq.APIError{Status: 200, Code: 850027}, // 发送数据超时，请稍后重试
+	}
+	for _, err := range retry {
+		if !isRetryableSendError(err) {
+			t.Fatalf("%v should be retryable", err)
+		}
+	}
+
+	// Permanent: review failures, permissions, quotas, mute, size, duplicates.
+	noRetry := []error{
+		&qq.APIError{Status: 200, Code: 11244},    // 内容审核未通过
+		&qq.APIError{Status: 200, Code: 40034102}, // 主动消息无权限
+		&qq.APIError{Status: 200, Code: 40034143}, // @全体成员需管理员
+		&qq.APIError{Status: 200, Code: 40034142}, // @全体成员次数超限
+		&qq.APIError{Status: 200, Code: 40054002}, // 机器人被禁言
+		&qq.APIError{Status: 200, Code: 40054007}, // 消息长度超限
+		&qq.APIError{Status: 200, Code: 40054005}, // 重复 message
+		&qq.APIError{Status: 200, Code: 850018},   // 被禁言
+		&qq.APIError{Status: 200, Code: 850031},   // 文件过大
+	}
+	for _, err := range noRetry {
+		if isRetryableSendError(err) {
+			t.Fatalf("%v must not be retried", err)
+		}
+	}
+
+	if isRetryableSendError(nil) {
+		t.Fatal("nil error must not be retryable")
+	}
+}

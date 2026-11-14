@@ -100,6 +100,9 @@ func (c *Client) SetBaseURL(u string) {
 	c.mu.Unlock()
 }
 
+// SetTokenForTest installs a prepared access token so tests skip the exchange.
+func (c *Client) SetTokenForTest(tok string) { c.forceToken(tok) }
+
 // forceToken installs a prepared access token so tests skip the token exchange.
 func (c *Client) forceToken(tok string) {
 	c.mu.Lock()
@@ -212,6 +215,27 @@ func (c *Client) do(ctx context.Context, method, path string, body any, out any,
 			ae.Message = truncate(string(raw), 300)
 		}
 		return ae
+	}
+	// The platform also reports business failures with HTTP 200 and a non-zero
+	// code (e.g. 40093001 "请重试"). Treating those as success silently loses
+	// errors, so check the body before decoding into the caller's struct.
+	var probe struct {
+		Code    int    `json:"code"`
+		ErrCode int    `json:"err_code"`
+		Message string `json:"message"`
+	}
+	if len(bytes.TrimSpace(raw)) > 0 && json.Unmarshal(raw, &probe) == nil {
+		code := probe.Code
+		if code == 0 {
+			code = probe.ErrCode
+		}
+		if code != 0 {
+			msg := probe.Message
+			if msg == "" {
+				msg = truncate(string(raw), 300)
+			}
+			return &APIError{Status: resp.StatusCode, Code: code, ErrCode: probe.ErrCode, Message: msg}
+		}
 	}
 	if out != nil && len(bytes.TrimSpace(raw)) > 0 {
 		if err := json.Unmarshal(raw, out); err != nil {
