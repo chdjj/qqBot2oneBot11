@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 
+	"qqbotonebot/internal/onebot"
 	"qqbotonebot/internal/qq"
 	"qqbotonebot/internal/store"
 )
@@ -96,4 +99,53 @@ func TestSendWithRetryDoesNotRetryPermanentError(t *testing.T) {
 
 func asAPIError(err error, target **qq.APIError) bool {
 	return errors.As(err, target)
+}
+
+func TestActiveSendHasNoReplyMarker(t *testing.T) {
+	// Without an explicit reply segment or msg_id, the outgoing message must be
+	// an ordinary active message: no msg_id, no msg_seq.
+	msg, err := segmentsToQQMessage("group", []onebot.Segment{
+		onebot.Text("定时提醒：该打卡了"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.replyTo != "" {
+		t.Fatalf("replyTo = %q, want empty for an active send", msg.replyTo)
+	}
+}
+
+func TestReplySegmentMakesSendPassive(t *testing.T) {
+	msg, err := segmentsToQQMessage("group", []onebot.Segment{
+		{Type: "reply", Data: map[string]any{"id": "EVT-123"}},
+		onebot.Text("收到"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if msg.replyTo != "EVT-123" {
+		t.Fatalf("replyTo = %q, want EVT-123", msg.replyTo)
+	}
+}
+
+func TestDispatchMessageWithoutExplicitIDIsActive(t *testing.T) {
+	// Seed a recent inbound event so the old behaviour would have made this
+	// passive. It must still go out active.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), `"msg_id"`) {
+			t.Errorf("active send leaked a msg_id: %s", body)
+		}
+		json.NewEncoder(w).Encode(map[string]any{"id": "MSG-1"})
+	}))
+	defer srv.Close()
+
+	app, b := newTestAppWithClient(t, srv)
+	b.rememberIncoming("group:GID", "EVT-OLD", 1, "u", 1)
+
+	resp := app.dispatchMessage(context.Background(), b, nil, "group", "GID", 1,
+		[]onebot.Segment{onebot.Text("主动推送")}, 0, "")
+	if resp.Status != "ok" {
+		t.Fatalf("status = %s msg=%s", resp.Status, resp.Msg)
+	}
 }

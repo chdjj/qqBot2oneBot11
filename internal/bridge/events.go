@@ -297,6 +297,9 @@ func hashID(s string) int64 {
 
 var _ store.Group
 
+// rememberIncoming records the newest inbound message id for a chat. Sends no
+// longer use it automatically: a message is only passive when the caller asks
+// for one (reply segment or msg_id/event_id parameter).
 func (b *Bot) rememberIncoming(key, eventID string, seq int64, sender string, groupNum int64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -308,10 +311,4 @@ func (b *Bot) rememberIncoming(key, eventID string, seq int64, sender string, gr
 			}
 		}
 	}
-}
-
-func (b *Bot) recentFor(key string) *RecentIncoming {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	return b.recent[key]
 }

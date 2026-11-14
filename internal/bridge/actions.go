@@ -163,7 +163,7 @@ func (a *App) sendGroup(ctx context.Context, b *Bot, echo any, p map[string]any)
 	if err != nil {
 		return onebot.Failed(echo, 400, "消息格式错误: "+err.Error())
 	}
-	return a.dispatchMessage(ctx, b, echo, "group", g.OpenID, g.NumID, segs, onebot.IntParam(p, "msg_seq"))
+	return a.dispatchMessage(ctx, b, echo, "group", g.OpenID, g.NumID, segs, onebot.IntParam(p, "msg_seq"), firstNonEmpty(onebot.StrParam(p, "msg_id"), onebot.StrParam(p, "event_id")))
 }
 
 func (a *App) sendPrivate(ctx context.Context, b *Bot, echo any, p map[string]any) onebot.APIResponse {
@@ -181,11 +181,11 @@ func (a *App) sendPrivate(ctx context.Context, b *Bot, echo any, p map[string]an
 	if err != nil {
 		return onebot.Failed(echo, 400, "消息格式错误: "+err.Error())
 	}
-	return a.dispatchMessage(ctx, b, echo, "private", openID, userNum, segs, onebot.IntParam(p, "msg_seq"))
+	return a.dispatchMessage(ctx, b, echo, "private", openID, userNum, segs, onebot.IntParam(p, "msg_seq"), onebot.StrParam(p, "msg_id"))
 }
 
 // dispatchMessage converts OneBot segments to a QQ message and sends it.
-func (a *App) dispatchMessage(ctx context.Context, b *Bot, echo any, kind, openID string, targetNum int64, segs []onebot.Segment, msgSeq int64) onebot.APIResponse {
+func (a *App) dispatchMessage(ctx context.Context, b *Bot, echo any, kind, openID string, targetNum int64, segs []onebot.Segment, msgSeq int64, explicitMsgID string) onebot.APIResponse {
 	if len(segs) == 0 {
 		return onebot.Failed(echo, 400, "消息为空")
 	}
@@ -227,14 +227,18 @@ func (a *App) dispatchMessage(ctx context.Context, b *Bot, echo any, kind, openI
 		msg.msg.Media = &qq.Media{FileInfo: up.FileInfo}
 	}
 
-	// Passive reply if this chat just received a message: QQ needs msg_id for
-	// replies and passive replies are exempt from the active-message quota.
+	// Passive reply only when the caller explicitly asks for one. Older versions
+	// silently rewrote every send within 4 minutes of an inbound message into a
+	// quoted reply, which turned scheduled/active pushes into "回复某人的消息".
+	//
+	// Explicit opt-in comes from OneBot params msg_id / event_id, or a reply
+	// segment carrying an id we recorded from a recent event.
+	passive := false
 	if msgSeq == 0 {
 		msgSeq = 1
 	}
-	passive := false
-	if ri := b.recentFor(kind + ":" + openID); ri != nil && time.Since(ri.At) < 4*time.Minute && ri.EventID != "" {
-		msg.msg.MsgID = ri.EventID
+	if id := firstNonEmpty(msg.replyTo, explicitMsgID); id != "" {
+		msg.msg.MsgID = id
 		seq := int(msgSeq)
 		msg.msg.MsgSeq = &seq
 		passive = true
@@ -431,6 +435,9 @@ type qqConvertedMessage struct {
 	// precedence over mediaURL. Images are re-encoded to JPEG before upload.
 	mediaData []byte
 	mediaName string
+	// replyTo is set when the caller included a reply segment carrying an
+	// explicit message id. It is the only thing that makes a send passive.
+	replyTo string
 }
 
 // maxInlineMediaBytes is the platform's limit for direct binary upload.
@@ -550,6 +557,7 @@ func sniffExt(b []byte) string {
 func segmentsToQQMessage(kind string, segs []onebot.Segment) (qqConvertedMessage, error) {
 	var textParts []string
 	var media *qqConvertedMessage
+	var replyTo string
 	for _, seg := range segs {
 		switch seg.Type {
 		case "text":
@@ -610,7 +618,12 @@ func segmentsToQQMessage(kind string, segs []onebot.Segment) (qqConvertedMessage
 			}
 			media = &qqConvertedMessage{mediaFileType: ft, mediaURL: url}
 		case "reply":
-			// Quoted replies go through msg_id; the marker itself is ignored.
+			// A reply segment is the caller explicitly asking for a quoted reply.
+			// Store the id so the send path can pass it as msg_id; without one,
+			// the message goes out as an ordinary active message.
+			if id := onebot.StrParam(seg.Data, "id"); id != "" {
+				replyTo = id
+			}
 		case "face":
 			// QQ v2 plain-text sends have no face encoding.
 		case "markdown":
@@ -623,7 +636,7 @@ func segmentsToQQMessage(kind string, segs []onebot.Segment) (qqConvertedMessage
 			if content == "" {
 				return qqConvertedMessage{}, errors.New("markdown 段缺少 content")
 			}
-			return qqConvertedMessage{msg: qq.Message{MsgType: 2, Markdown: map[string]any{"content": content}}}, nil
+			return qqConvertedMessage{msg: qq.Message{MsgType: 2, Markdown: map[string]any{"content": content}}, replyTo: replyTo}, nil
 		case "json", "xml", "share", "music":
 			return qqConvertedMessage{}, errors.New("QQ 官方机器人不支持该消息段: " + seg.Type)
 		default:
@@ -641,12 +654,13 @@ func segmentsToQQMessage(kind string, segs []onebot.Segment) (qqConvertedMessage
 			mediaURL:      media.mediaURL,
 			mediaData:     media.mediaData,
 			mediaName:     media.mediaName,
+			replyTo:       replyTo,
 		}, nil
 	}
 	if content == "" {
 		return qqConvertedMessage{}, errors.New("消息内容为空")
 	}
-	return qqConvertedMessage{msg: qq.Message{MsgType: 0, Content: content}}, nil
+	return qqConvertedMessage{msg: qq.Message{MsgType: 0, Content: content}, replyTo: replyTo}, nil
 }
 
 func qqErrorMessage(err error) string {
@@ -847,4 +861,15 @@ func isRetryableSendError(err error) bool {
 		return false
 	}
 	return ae.Status >= 500
+}
+
+// firstNonEmpty returns the first non-blank string, letting a reply segment
+// and an explicit msg_id parameter both feed the same passive-reply decision.
+func firstNonEmpty(vals ...string) string {
+	for _, v := range vals {
+		if s := strings.TrimSpace(v); s != "" {
+			return s
+		}
+	}
+	return ""
 }

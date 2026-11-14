@@ -30,8 +30,9 @@ func displayLabel(rec store.Bot) string {
 	return "机器人 " + rec.AppID
 }
 
-// RecentIncoming remembers the last inbound message of a chat so replies can go
-// out as passive replies (QQ only allows active messages under strict quotas).
+// RecentIncoming remembers the last inbound message of a chat. It is kept for
+// diagnostics and for plugins that build a reply segment from a known event id;
+// sends are never rewritten into passive replies on their own.
 type RecentIncoming struct {
 	EventID  string
 	Seq      int64
