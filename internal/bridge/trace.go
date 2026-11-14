@@ -21,11 +21,62 @@ func (rt *listenerRuntime) traceReceive(transport, action string, act onebot.Act
 	if !rt.traceEnabled() {
 		return
 	}
-	params := compactJSON(act.Params)
 	rt.app.Log("debug", fmt.Sprintf(
 		"[%s/#%d %s] ← 收到动作 %s 参数=%s echo=%s",
-		rt.cfg.Name, rt.cfg.ID, transport, action, params, ellipsis(anyToString(echo)),
+		rt.cfg.Name, rt.cfg.ID, transport, action,
+		ellipsis(redactInlinePayloads(compactJSON(act.Params))), ellipsis(anyToString(echo)),
 	))
+}
+
+// redactInlinePayloads shortens base64::/data-URI payloads inside a JSON string
+// before it reaches the log. A single inline image is megabytes of text; logging
+// it verbatim buried every other line and made the log unusable.
+func redactInlinePayloads(s string) string {
+	const (
+		b64Mark  = "base64://"
+		dataMark = ";base64,"
+		keep     = 48
+	)
+	var b strings.Builder
+	for {
+		idx, marker := -1, ""
+		if i := strings.Index(s, b64Mark); i >= 0 {
+			idx, marker = i, b64Mark
+		}
+		if i := strings.Index(s, dataMark); i >= 0 && (idx < 0 || i < idx) {
+			idx, marker = i, dataMark
+		}
+		if idx < 0 {
+			b.WriteString(s)
+			break
+		}
+		end := idx + len(marker)
+		b.WriteString(s[:end])
+		// Consume base64 characters only, so the closing quote survives.
+		j := end
+		for j < len(s) && isBase64Byte(s[j]) {
+			j++
+		}
+		payload := j - end
+		if payload > keep {
+			b.WriteString(s[end : end+keep])
+			fmt.Fprintf(&b, "…[base64 已省略 %d 字符]", payload-keep)
+		} else {
+			b.WriteString(s[end:j])
+		}
+		s = s[j:]
+	}
+	return b.String()
+}
+
+func isBase64Byte(c byte) bool {
+	switch {
+	case c >= 'A' && c <= 'Z', c >= 'a' && c <= 'z', c >= '0' && c <= '9':
+		return true
+	case c == '+', c == '/', c == '=':
+		return true
+	}
+	return false
 }
 
 // traceReply logs the response sent back to the OneBot client.

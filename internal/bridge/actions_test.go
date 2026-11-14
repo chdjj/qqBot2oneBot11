@@ -1,7 +1,11 @@
 package bridge
 
 import (
+	"bytes"
 	"errors"
+	"image"
+	"image/color"
+	"image/png"
 	"strings"
 	"testing"
 
@@ -155,10 +159,10 @@ func TestExtractBase64Forms(t *testing.T) {
 			t.Fatalf("%s: ok=%v want %v", c.name, ok, c.ok)
 		}
 		if ok {
-			if payload == "" {
+			if len(payload) == 0 {
 				t.Fatalf("%s: empty payload", c.name)
 			}
-		} else if name != "" || payload != "" {
+		} else if name != "" || len(payload) != 0 {
 			t.Fatalf("%s: should return zeros when not base64", c.name)
 		}
 	}
@@ -188,7 +192,7 @@ func TestSegmentsToQQBase64Media(t *testing.T) {
 	if msg.msg.MsgType != 7 {
 		t.Fatalf("msg_type = %d", msg.msg.MsgType)
 	}
-	if msg.mediaData == "" {
+	if len(msg.mediaData) == 0 {
 		t.Fatal("mediaData lost — base64 would be resent as a URL upload")
 	}
 	if msg.mediaURL != "" {
@@ -329,5 +333,102 @@ func TestStripAtEveryoneFallback(t *testing.T) {
 	}
 	if only == "" || !strings.Contains(only, "@全体成员") {
 		t.Fatalf("placeholder = %q", only)
+	}
+}
+
+// pngBytes builds a small valid PNG payload for prepareMedia tests.
+func pngBytes(t *testing.T, w, h int) []byte {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			img.Set(x, y, color.RGBA{R: uint8(x), G: uint8(y), B: 128, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+func TestPrepareMediaConvertsImageToJPEG(t *testing.T) {
+	app := &App{logs: newRingLog(10), consoleSub: map[int]chan []byte{}}
+	msg := qqConvertedMessage{
+		msg:           qq.Message{MsgType: 7},
+		mediaFileType: 1,
+		mediaData:     pngBytes(t, 200, 120),
+		mediaName:     "photo.png",
+	}
+	up, data, err := app.prepareMedia(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(data, []byte{0xFF, 0xD8}) {
+		t.Fatalf("image was not converted to JPEG: % x", data[:4])
+	}
+	if !strings.HasSuffix(up.Name, ".jpg") {
+		t.Fatalf("name = %q, want .jpg", up.Name)
+	}
+	if up.FileType != 1 {
+		t.Fatalf("file type = %d", up.FileType)
+	}
+	if up.URL != "" {
+		t.Fatalf("URL should be empty for local bytes")
+	}
+}
+
+func TestPrepareMediaKeepsNonImageBytes(t *testing.T) {
+	app := &App{logs: newRingLog(10), consoleSub: map[int]chan []byte{}}
+	video := []byte("\x00\x00\x00\x18ftypmp42") // mp4 magic
+	msg := qqConvertedMessage{
+		msg:           qq.Message{MsgType: 7},
+		mediaFileType: 2, // video
+		mediaData:     append(video, bytes.Repeat([]byte{0}, 64)...),
+		mediaName:     "clip.mp4",
+	}
+	up, data, err := app.prepareMedia(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.HasPrefix(data, video) {
+		t.Fatal("video bytes must pass through untouched")
+	}
+	if up.Name != "clip.mp4" {
+		t.Fatalf("name = %q", up.Name)
+	}
+}
+
+func TestPrepareMediaURLCarriesNoBytes(t *testing.T) {
+	app := &App{logs: newRingLog(10), consoleSub: map[int]chan []byte{}}
+	msg := qqConvertedMessage{
+		msg:           qq.Message{MsgType: 7},
+		mediaFileType: 1,
+		mediaURL:      "https://example.com/a.png",
+	}
+	up, data, err := app.prepareMedia(msg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if up.URL != "https://example.com/a.png" {
+		t.Fatalf("url = %q", up.URL)
+	}
+	if len(data) != 0 {
+		t.Fatal("URL media must not produce local bytes")
+	}
+}
+
+func TestJpegName(t *testing.T) {
+	cases := map[string]string{
+		"a.png":       "a.jpg",
+		"a.jpeg":      "a.jpg",
+		"noext":       "noext.jpg",
+		"":            "image.jpg",
+		"dir.x/a.png": "dir.x/a.jpg",
+	}
+	for in, want := range cases {
+		if got := jpegName(in); got != want {
+			t.Fatalf("jpegName(%q) = %q, want %q", in, got, want)
+		}
 	}
 }

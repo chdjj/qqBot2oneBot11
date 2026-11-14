@@ -279,7 +279,10 @@ func transportName(t string) string {
 // ---- HTTP server & SSE ----
 
 func (rt *listenerRuntime) handleHTTP(w http.ResponseWriter, r *http.Request) {
-	r.Body = http.MaxBytesReader(w, r.Body, 8<<20)
+	// Inline media arrives base64-encoded inside the JSON body, so the limit
+	// has to cover a file plus its encoding overhead. 5 MiB of image is ~6.8 MiB
+	// of base64; 64 MiB leaves room for one large attachment per request.
+	r.Body = http.MaxBytesReader(w, r.Body, 64<<20)
 	w.Header().Set("Content-Type", "application/json")
 	if !rt.authorized(r) {
 		rt.unauthorized(w, r)

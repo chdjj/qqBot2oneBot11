@@ -160,7 +160,10 @@ Token 校验接受 `Authorization: Bearer <token>`、`Authorization: Token <toke
 - `at` 的 `qq=all` → `<qqbot-at-everyone />`（需机器人是群管理员，每群每天 1 次；失败时自动去掉标签重发正文）
 - `at` 指定用户 → 退化为纯文本 `@昵称`（OneBot 的 `user_id` 并非 `member_openid`，且群聊纯文本不支持该标记）
 - `markdown` → 以 QQ 的 Markdown 消息（`msg_type=2`）发送，需带 `content`
-- 媒体段需要**可访问的 URL**（QQ 服务端会自行下载转存），或 `base64://` 直传（≤5MB）；一次只能发一个媒体
+- 媒体段需要**可访问的 URL**（QQ 服务端会自行下载转存），或 `base64://` 直传；一次只能发一个媒体
+- **图片会自动转成 JPEG**：PNG/GIF/WebP/JPEG 一律解码后重编码为 JPEG，先降质量、再缩尺寸，直到 ≤ 5MB。
+  透明区域会铺成白色（避免 JPEG 变黑）。实测：8.8MB PNG → 3.0MB JPEG，154MB 极端图 → 4.05MB
+- 压缩后仍超过 5MB（罕见）才走**分片上传**：预上传 → 逐片 PUT 到预签名 URL → 确认分片 → 合并
 - `json`、`xml`、`share`、`music` 等段不支持发送，返回明确错误
 - 纯文本超过 **4000 字符**时自动按行分块续发，返回最后一块的 `message_id`
 

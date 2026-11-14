@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"qqbotonebot/internal/media"
 	"qqbotonebot/internal/onebot"
 	"qqbotonebot/internal/qq"
 	"qqbotonebot/internal/store"
@@ -193,23 +194,32 @@ func (a *App) dispatchMessage(ctx context.Context, b *Bot, echo any, kind, openI
 		return onebot.Failed(echo, 400, err.Error())
 	}
 	if msg.msg.MsgType == 7 {
-		// Media must be registered first, which requires the network call.
+		upReq, uploadData, prepErr := a.prepareMedia(msg)
+		if prepErr != nil {
+			return onebot.Failed(echo, 400, prepErr.Error())
+		}
 		var up *qq.UploadResult
-		upReq := qq.MediaUpload{
-			FileType: msg.mediaFileType,
-			URL:      msg.mediaURL,
-			Data:     msg.mediaData,
-			Name:     msg.mediaName,
-		}
-		if msg.mediaData != "" {
-			// base64 direct upload avoids the server-side download that fails
-			// for slow or China-unreachable image hosts.
-			a.Log("debug", fmt.Sprintf("媒体直传 base64，约 %d 字节", len(msg.mediaData)))
-		}
-		if kind == "group" {
-			up, err = b.client.UploadGroupMedia(ctx, openID, upReq)
-		} else {
-			up, err = b.client.UploadC2CMedia(ctx, openID, upReq)
+		switch {
+		case upReq.URL != "" && len(uploadData) == 0:
+			// URL-based media: the platform downloads it, nothing to compress.
+			if kind == "group" {
+				up, err = b.client.UploadGroupMedia(ctx, openID, upReq)
+			} else {
+				up, err = b.client.UploadC2CMedia(ctx, openID, upReq)
+			}
+		default:
+			// Local bytes: direct upload while under 5 MiB, else chunked.
+			if len(uploadData) <= qqInlineLimit {
+				upReq.Data = base64.StdEncoding.EncodeToString(uploadData)
+				if kind == "group" {
+					up, err = b.client.UploadGroupMedia(ctx, openID, upReq)
+				} else {
+					up, err = b.client.UploadC2CMedia(ctx, openID, upReq)
+				}
+			} else {
+				a.Log("info", fmt.Sprintf("媒体 %d 字节超过直传上限，改用分片上传", len(uploadData)))
+				up, err = b.client.UploadChunked(ctx, kind, openID, upReq, uploadData)
+			}
 		}
 		if err != nil {
 			return onebot.Failed(echo, qqRetCode(err), "上传媒体失败: "+qqErrorMessage(err))
@@ -421,9 +431,9 @@ type qqConvertedMessage struct {
 	msg           qq.Message
 	mediaFileType int
 	mediaURL      string
-	// mediaData is base64 content for direct uploads (≤5MB); when set it takes
-	// precedence over mediaURL.
-	mediaData string
+	// mediaData holds raw bytes for direct uploads, when available; it takes
+	// precedence over mediaURL. Images are re-encoded to JPEG before upload.
+	mediaData []byte
 	mediaName string
 }
 
@@ -443,15 +453,16 @@ const qqbotAtEveryone = `<qqbot-at-everyone />`
 //
 // It returns ok=false when the segment is not base64 at all. An error means the
 // caller clearly meant base64 but the data is invalid or too large.
-func extractBase64(data map[string]any, file, url string) (name, payload string, ok bool, err error) {
+func extractBase64(data map[string]any, file, url string) (name string, decoded []byte, ok bool, err error) {
 	raw := strings.TrimSpace(file)
 	if u := strings.TrimSpace(url); raw == "" && u != "" {
 		raw = u
 	}
 	if raw == "" {
-		return "", "", false, nil
+		return "", nil, false, nil
 	}
 
+	var payload string
 	prefix := ""
 	switch {
 	case strings.HasPrefix(raw, "base64://"):
@@ -461,19 +472,20 @@ func extractBase64(data map[string]any, file, url string) (name, payload string,
 		payload = raw[strings.Index(raw, ";base64,")+len(";base64,"):]
 		prefix = "data-uri"
 	case strings.HasPrefix(raw, "http://"), strings.HasPrefix(raw, "https://"):
-		return "", "", false, nil
+		return "", nil, false, nil
 	default:
 		// A bare string only counts as base64 if it decodes and looks like a
 		// payload; otherwise it is a filename and must not be guessed at.
 		if !looksLikeBase64(raw) {
-			return "", "", false, nil
+			return "", nil, false, nil
 		}
 		payload = raw
 		prefix = "bare"
 	}
 
 	payload = strings.TrimSpace(payload)
-	decoded, decErr := base64.StdEncoding.DecodeString(payload)
+	var decErr error
+	decoded, decErr = base64.StdEncoding.DecodeString(payload)
 	if decErr != nil {
 		// Tolerate unpadded / URL-safe variants.
 		if d2, e2 := base64.RawStdEncoding.DecodeString(payload); e2 == nil {
@@ -485,16 +497,12 @@ func extractBase64(data map[string]any, file, url string) (name, payload string,
 	if decErr != nil {
 		if prefix == "bare" {
 			// A normal filename that happens to use base64-ish characters.
-			return "", "", false, nil
+			return "", nil, false, nil
 		}
-		return "", "", false, fmt.Errorf("base64 数据解码失败: %w", decErr)
-	}
-	if len(decoded) > maxInlineMediaBytes {
-		return "", "", false, fmt.Errorf("base64 数据 %d 字节，超过 QQ 直传上限 5MB，请改用可访问的 url",
-			len(decoded))
+		return "", nil, false, fmt.Errorf("base64 数据解码失败: %w", decErr)
 	}
 	// Re-encode to canonical form so QQ receives a clean payload.
-	return mediaFileName(data, decoded), base64.StdEncoding.EncodeToString(decoded), true, nil
+	return mediaFileName(data, decoded), decoded, true, nil
 }
 
 // looksLikeBase64 is a cheap guard: filenames such as "a.png" must not be
@@ -718,3 +726,59 @@ func qqRetCode(err error) int {
 }
 
 var _ store.Group
+
+// qqInlineLimit mirrors QQ's cap for a single file_data upload.
+const qqInlineLimit = 5 << 20
+
+// prepareMedia normalises media before upload. Images are re-encoded to JPEG
+// (the platform accepts png/jpg, and JPEG fits the 5 MiB inline cap far more
+// often); anything still too large is returned as raw bytes for chunked upload.
+//
+// It returns either a URL-based upload (nothing to compress) or raw bytes.
+func (a *App) prepareMedia(msg qqConvertedMessage) (qq.MediaUpload, []byte, error) {
+	up := qq.MediaUpload{
+		FileType: msg.mediaFileType,
+		URL:      msg.mediaURL,
+		Name:     msg.mediaName,
+	}
+	if len(msg.mediaData) == 0 {
+		return up, nil, nil
+	}
+
+	data := msg.mediaData
+	// Only images are re-encoded; videos, voice and files pass through.
+	if msg.mediaFileType == 1 && media.IsImage(data) {
+		prepared, err := media.PrepareJPEG(data, qqInlineLimit, msg.mediaName)
+		if err == nil {
+			data = prepared.JPEG
+			up.Name = jpegName(prepared.Name)
+			if prepared.Resized {
+				a.Log("debug", fmt.Sprintf("图片已压缩为 JPEG：%d→%d 字节，%dx%d",
+					prepared.OriginalSize, len(prepared.JPEG), prepared.Width, prepared.Height))
+			} else {
+				a.Log("debug", fmt.Sprintf("图片已转为 JPEG：%d→%d 字节",
+					prepared.OriginalSize, len(prepared.JPEG)))
+			}
+		} else {
+			// Could not compress below the inline cap: keep original bytes and
+			// let the chunked path handle them rather than failing outright.
+			a.Log("warn", fmt.Sprintf("图片压缩未达标（%v），将按原图分片上传", err))
+		}
+	}
+	if up.Name == "" {
+		up.Name = msg.mediaName
+	}
+	return up, data, nil
+}
+
+// jpegName swaps a file extension for .jpg so the platform sniffs the right
+// format from the name as well as the bytes.
+func jpegName(name string) string {
+	if name == "" {
+		return "image.jpg"
+	}
+	if idx := strings.LastIndex(name, "."); idx > 0 {
+		return name[:idx] + ".jpg"
+	}
+	return name + ".jpg"
+}

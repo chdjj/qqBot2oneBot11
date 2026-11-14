@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"qqbotonebot/internal/onebot"
@@ -108,5 +109,30 @@ func TestWSRetCodeForDispatchErrors(t *testing.T) {
 	}
 	if got := wsRetCode(errors.New("other")); got != 1400 {
 		t.Fatalf("other -> %d, want 1400", got)
+	}
+}
+
+func TestRedactInlinePayloads(t *testing.T) {
+	payload := strings.Repeat("QUJD", 500) // 2000 base64 chars
+	in := `{"message":[{"file":"base64://` + payload + `"}]}`
+	out := redactInlinePayloads(in)
+	if len(out) > 300 {
+		t.Fatalf("redacted output still %d chars", len(out))
+	}
+	if !strings.Contains(out, "base64 已省略") {
+		t.Fatalf("missing marker: %q", out)
+	}
+	// Structure must survive so the log stays readable.
+	if !strings.HasPrefix(out, `{"message":[{"file":"base64://`) || !strings.HasSuffix(out, `"}]}`) {
+		t.Fatalf("structure damaged: %q", out)
+	}
+	// Data URIs get the same treatment.
+	d := `{"f":"data:image/png;base64,` + payload + `"}`
+	if o := redactInlinePayloads(d); strings.Contains(o, payload) {
+		t.Fatal("data URI payload not redacted")
+	}
+	// Plain parameters are left alone.
+	if o := redactInlinePayloads(`{"group_id":"100000"}`); o != `{"group_id":"100000"}` {
+		t.Fatalf("innocent params changed: %q", o)
 	}
 }

@@ -56,9 +56,10 @@ type Client struct {
 
 	hc *http.Client
 
-	mu      sync.Mutex
-	token   string
-	expires time.Time
+	mu           sync.Mutex
+	token        string
+	expires      time.Time
+	baseOverride string
 }
 
 func NewClient(appID, secret string, sandbox bool) *Client {
@@ -71,6 +72,12 @@ func NewClient(appID, secret string, sandbox bool) *Client {
 }
 
 func (c *Client) BaseURL() string {
+	c.mu.Lock()
+	override := c.baseOverride
+	c.mu.Unlock()
+	if override != "" {
+		return override
+	}
 	// QQBOT_API_BASE lets the test harness point the client at a mock upstream.
 	if v := baseURLOverride(); v != "" {
 		return v
@@ -85,6 +92,21 @@ func (c *Client) httpClient() *http.Client { return c.hc }
 
 // SetHTTPClient lets callers share or tune the transport (used for tests).
 func (c *Client) SetHTTPClient(hc *http.Client) { c.hc = hc }
+
+// SetBaseURL overrides the API base for tests against a local server.
+func (c *Client) SetBaseURL(u string) {
+	c.mu.Lock()
+	c.baseOverride = strings.TrimSuffix(u, "/")
+	c.mu.Unlock()
+}
+
+// forceToken installs a prepared access token so tests skip the token exchange.
+func (c *Client) forceToken(tok string) {
+	c.mu.Lock()
+	c.token = tok
+	c.expires = time.Now().Add(time.Hour)
+	c.mu.Unlock()
+}
 
 // Token returns a cached access token, refreshing it when it is close to expiry.
 func (c *Client) Token(ctx context.Context) (string, error) {
